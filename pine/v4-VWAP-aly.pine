@@ -11,7 +11,7 @@
 //     by min_conf (early bars cannot reach 7 true sources).
 //   - arrays: uniform typed form array.new<T>() (v6 generic; the file already
 //     used it for marker arrays).
-indicator("XAUUSD SMC VWAP Engine [Quant] v4", shorttitle="SMC VWAP v4", overlay=true, max_lines_count=50, max_boxes_count=50, max_labels_count=150)
+indicator("XAUUSD SMC VWAP Engine [Quant] v4", shorttitle="SMC VWAP v4", overlay=true, max_boxes_count=100, max_labels_count=150)
 
 // =========================================================================
 // 1. INPUT
@@ -34,120 +34,122 @@ grp_alrt  = "Alerts"
 grp_vis   = "Visual Settings"
 
 // VWAP
-show_vwap         = input.bool(true, "Show Session VWAP", group=grp_vwap)
-show_vwap_anchored= input.bool(false, "Show Anchored VWAP", group=grp_vwap)
-anchor_src        = input.string("Session", "Anchor Mode", options=["Session", "Swing Leg", "Fixed Date"], group=grp_vwap)
-anchor_date       = input.time(timestamp("2024-01-01 00:00"), "Anchor Date (Fixed Date mode)", group=grp_vwap)
-vwap_mult         = input.float(1.5, "VWAP Band Multiplier", group=grp_vwap)
+show_vwap         = input.bool(true, "Show Session VWAP", group=grp_vwap, display=display.none)
+show_vwap_anchored= input.bool(false, "Show Anchored VWAP", group=grp_vwap, display=display.none)
+anchor_src        = input.string("Session", "Anchor Mode", options=["Session", "Swing Leg", "Fixed Date"], group=grp_vwap, display=display.none)
+anchor_date       = input.time(timestamp("2024-01-01 00:00"), "Anchor Date (Fixed Date mode)", group=grp_vwap, display=display.none)
+vwap_mult         = input.float(1.5, "VWAP Band Multiplier", group=grp_vwap, display=display.none)
 
 // SMC
-swing_len         = input.int(5, "Swing Sensitivity", minval=1, group=grp_smc)
-show_struct       = input.bool(true, "Show Structure (BOS/CHOCH)", group=grp_smc)
-use_disp_choch    = input.bool(true, "Displacement-Quality CHOCH", group=grp_smc)
-disp_min_range    = input.float(0.70, "Min Range / ATR", minval=0.0, maxval=2.0, step=0.05, group=grp_smc)
-disp_min_body     = input.float(0.55, "Min Body %", minval=0.0, maxval=0.9, step=0.05, group=grp_smc)
-disp_min_break    = input.float(0.10, "Min Break / ATR", minval=0.0, maxval=0.5, step=0.05, group=grp_smc)
+swing_len         = input.int(5, "Swing Sensitivity", minval=1, group=grp_smc, display=display.none)
+show_struct       = input.bool(true, "Show Structure (BOS/CHOCH)", group=grp_smc, display=display.none)
+use_disp_choch    = input.bool(true, "Displacement-Quality CHOCH", group=grp_smc, display=display.none)
+disp_min_range    = input.float(0.70, "Min Range / ATR", minval=0.0, maxval=2.0, step=0.05, group=grp_smc, display=display.none)
+disp_min_body     = input.float(0.55, "Min Body %", minval=0.0, maxval=0.9, step=0.05, group=grp_smc, display=display.none)
+disp_min_break    = input.float(0.10, "Min Break / ATR", minval=0.0, maxval=0.5, step=0.05, group=grp_smc, display=display.none)
 
 // Liquidity
-show_liq          = input.bool(true, "Show Liquidity Sweeps", group=grp_liq)
+show_liq          = input.bool(true, "Show Liquidity Sweeps", group=grp_liq, display=display.none)
 
 // FVG
-show_fvg          = input.bool(true, "Show FVG", group=grp_fvg)
-fvg_min_size      = input.float(0.5, "FVG Min Size (ATR Mult)", group=grp_fvg)
-fvg_mitigated_del = input.bool(true, "Delete Mitigated FVG", group=grp_fvg)
-fvg_max_size      = input.int(12, "Max Tracked FVGs", minval=1, maxval=40, group=grp_fvg)
-fvg_max_age       = input.int(300, "FVG Max Age (bars)", minval=10, group=grp_fvg)
+show_fvg          = input.bool(true, "Show FVG", group=grp_fvg, display=display.none)
+fvg_min_size      = input.float(0.5, "FVG Min Size (ATR Mult)", group=grp_fvg, display=display.none)
+fvg_mitigated_del = input.bool(true, "Delete Mitigated FVG", group=grp_fvg, display=display.none)
+fvg_max_size      = input.int(12, "Max Tracked FVGs", minval=1, maxval=40, group=grp_fvg, display=display.none)
+fvg_max_age       = input.int(300, "FVG Max Age (bars)", minval=10, group=grp_fvg, display=display.none)
 
 // OB
-show_ob           = input.bool(true, "Show Order Blocks", group=grp_ob)
-ob_max_count      = input.int(5, "Max Active OBs", group=grp_ob)
-ob_max_age        = input.int(200, "OB Max Age (bars)", minval=10, group=grp_ob)
+show_ob           = input.bool(true, "Show Order Blocks", group=grp_ob, display=display.none)
+ob_max_count      = input.int(5, "Max Active OBs", minval=1, maxval=20, group=grp_ob, display=display.none)
+ob_max_age        = input.int(200, "OB Max Age (bars)", minval=10, group=grp_ob, display=display.none)
 
 // Fib
-show_fib_levels   = input.bool(false, "Show Fibonacci 50 / 61.8", group=grp_fib)
+show_fib_levels   = input.bool(false, "Show Fibonacci 50 / 61.8", group=grp_fib, display=display.none)
 
 // ATR
-atr_len           = input.int(14, "ATR Length", group=grp_atr)
-atr_base_len      = input.int(50, "ATR Baseline Length", minval=1, group=grp_atr)
-min_atr_ratio     = input.float(0.0, "Min ATR Ratio (x baseline, 0 = off)", minval=0.0, step=0.05, group=grp_atr)
+atr_len           = input.int(14, "ATR Length", minval=1, group=grp_atr, display=display.none)
+atr_base_len      = input.int(50, "ATR Baseline Length", minval=1, group=grp_atr, display=display.none)
+min_atr_ratio     = input.float(0.0, "Min ATR Ratio (x baseline, 0 = off)", minval=0.0, step=0.05, group=grp_atr, display=display.none)
 
 // Signals (P5: the gate is now a confluence count, not a weighted sum — the
 // number is visible on the trade card and tunable while the chart is open)
-min_conf          = input.int(7, "Minimum Confluence (0-15)", minval=0, maxval=15, group=grp_sig)
-cooldown_bars     = input.int(10, "Signal Cooldown Bars", group=grp_sig)
+min_conf          = input.int(7, "Minimum Confluence (0-15)", minval=0, maxval=15, group=grp_sig, display=display.none)
+cooldown_bars     = input.int(10, "Signal Cooldown Bars", group=grp_sig, display=display.none)
 
 // Dashboard
-show_dash         = input.bool(true, "Show Status Panel", group=grp_dash)
-show_card         = input.bool(true, "Show Trade Card", group=grp_dash)
-dash_pos          = input.string("Bottom Right", "Status Panel Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group=grp_dash)
-card_pos          = input.string("Top Right", "Trade Card Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group=grp_dash)
+show_dash         = input.bool(true, "Show Status Panel", group=grp_dash, display=display.none)
+show_card         = input.bool(true, "Show Trade Card", group=grp_dash, display=display.none)
+dash_pos          = input.string("Bottom Right", "Status Panel Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group=grp_dash, display=display.none)
+card_pos          = input.string("Top Right", "Trade Card Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group=grp_dash, display=display.none)
 
 // Theme
-col_buy    = input.color(color.rgb(0, 208, 142),   "Buy",     inline="t1", group=grp_theme)
-col_sell   = input.color(color.rgb(235, 72, 96),    "Sell",    inline="t1", group=grp_theme)
-col_panel  = input.color(color.rgb(7, 10, 14),      "Panel",   inline="t2", group=grp_theme)
-col_header = input.color(color.rgb(20, 26, 33),     "Header",  inline="t2", group=grp_theme)
-col_text   = input.color(color.rgb(239, 243, 247),  "Text",    inline="t3", group=grp_theme)
-col_dim    = input.color(color.rgb(150, 162, 175),  "Dim",     inline="t3", group=grp_theme)
-col_warn   = input.color(color.rgb(240, 158, 38),   "Warning", inline="t4", group=grp_theme)
-col_frame  = input.color(color.rgb(66, 75, 86),     "Frame",   inline="t4", group=grp_theme)
+col_buy    = input.color(color.rgb(0, 208, 142),   "Buy",     inline="t1", group=grp_theme, display=display.none)
+col_sell   = input.color(color.rgb(235, 72, 96),    "Sell",    inline="t1", group=grp_theme, display=display.none)
+col_panel  = input.color(color.rgb(7, 10, 14),      "Panel",   inline="t2", group=grp_theme, display=display.none)
+col_header = input.color(color.rgb(20, 26, 33),     "Header",  inline="t2", group=grp_theme, display=display.none)
+col_text   = input.color(color.rgb(239, 243, 247),  "Text",    inline="t3", group=grp_theme, display=display.none)
+col_dim    = input.color(color.rgb(150, 162, 175),  "Dim",     inline="t3", group=grp_theme, display=display.none)
+col_warn   = input.color(color.rgb(240, 158, 38),   "Warning", inline="t4", group=grp_theme, display=display.none)
+col_frame  = input.color(color.rgb(66, 75, 86),     "Frame",   inline="t4", group=grp_theme, display=display.none)
+col_vwap   = input.color(color.rgb(255, 196, 61),   "VWAP",    inline="t5", group=grp_theme, display=display.none)
+
+bull_col = col_buy
+bear_col = col_sell
 
 // Confluence
-conf_tol_pips     = input.float(70.0, "Proximity Tolerance (pips)", minval=5.0, step=5.0, group=grp_conf)
-use_brn           = input.bool(true, "Round-Number Confluence", group=grp_conf)
-brn_tol           = input.float(0.20, "BRN Tolerance (x ATR)", minval=0.05, maxval=1.0, step=0.05, group=grp_conf)
-use_regime        = input.bool(true, "EMA Regime Confluence", group=grp_conf)
-ema_fast_len      = input.int(13, "Fast EMA Length", minval=2, group=grp_conf)
-ema_slow_len      = input.int(50, "Slow EMA Length", minval=5, group=grp_conf)
-ema_slope_min     = input.float(0.01, "Min EMA Slope / ATR", minval=0.0, maxval=0.2, step=0.005, group=grp_conf)
-use_pdsweep       = input.bool(true, "Previous-Day Sweep + Reclaim", group=grp_conf)
-pdsweep_lookback  = input.int(6, "Sweep Lookback (bars)", minval=2, maxval=20, group=grp_conf)
-use_htf_cluster   = input.bool(true, "HTF Level Cluster", group=grp_conf)
+conf_tol_pips     = input.float(70.0, "Proximity Tolerance (pips)", minval=5.0, step=5.0, group=grp_conf, display=display.none)
+use_brn           = input.bool(true, "Round-Number Confluence", group=grp_conf, display=display.none)
+brn_tol           = input.float(0.20, "BRN Tolerance (x ATR)", minval=0.05, maxval=1.0, step=0.05, group=grp_conf, display=display.none)
+use_regime        = input.bool(true, "EMA Regime Confluence", group=grp_conf, display=display.none)
+ema_fast_len      = input.int(13, "Fast EMA Length", minval=2, group=grp_conf, display=display.none)
+ema_slow_len      = input.int(50, "Slow EMA Length", minval=5, group=grp_conf, display=display.none)
+ema_slope_min     = input.float(0.01, "Min EMA Slope / ATR", minval=0.0, maxval=0.2, step=0.005, group=grp_conf, display=display.none)
+use_pdsweep       = input.bool(true, "Previous-Day Sweep + Reclaim", group=grp_conf, display=display.none)
+pdsweep_lookback  = input.int(6, "Sweep Lookback (bars)", minval=2, maxval=20, group=grp_conf, display=display.none)
+use_htf_cluster   = input.bool(true, "HTF Level Cluster", group=grp_conf, display=display.none)
 
 // Risk — EzyMapPro G3 model. Stops and targets derive from the mode, not
 // from fixed R multiples. ATR multiples stay hardcoded per mode exactly as
 // in EzyMap (stop 0.40/0.60/0.85, target 0.60/1.00/1.50).
-trade_mode        = input.string("INTRADAY", "Mode", options=["SCALP", "INTRADAY", "SWING"], group=grp_risk)
-scalp_stop        = input.float(20.0, "Scalp SL Buffer", minval=10.0, maxval=150.0, step=5.0, group=grp_risk)
-intraday_stop     = input.float(35.0, "Intraday SL Buffer", minval=10.0, maxval=300.0, step=5.0, group=grp_risk)
-swing_stop        = input.float(70.0, "Swing SL Buffer", minval=20.0, maxval=600.0, step=10.0, group=grp_risk)
-scalp_tmin        = input.float(15.0, "Scalp Target Minimum", minval=10.0, maxval=300.0, step=5.0, group=grp_risk)
-scalp_tmax        = input.float(80.0, "Scalp Target Maximum", minval=30.0, maxval=500.0, step=10.0, group=grp_risk)
-intraday_tmin     = input.float(60.0, "Intraday Target Minimum", minval=30.0, maxval=800.0, step=10.0, group=grp_risk)
-intraday_tmax     = input.float(250.0, "Intraday Target Maximum", minval=100.0, maxval=1500.0, step=50.0, group=grp_risk)
-swing_tmin        = input.float(180.0, "Swing Target Minimum", minval=100.0, maxval=2000.0, step=20.0, group=grp_risk)
-swing_tmax        = input.float(800.0, "Swing Target Maximum", minval=300.0, maxval=5000.0, step=100.0, group=grp_risk)
-minimum_rr        = input.float(0.6, "Minimum R:R", minval=0.5, maxval=1.0, step=0.1, group=grp_risk)
-maximum_rr        = input.float(2.5, "Maximum R:R", minval=1.0, maxval=5.0, step=0.5, group=grp_risk)
-snr_frontrun      = input.float(10.0, "TP / SL Before S&R", minval=5.0, maxval=100.0, step=5.0, group=grp_risk)
-use_session_filter= input.bool(false, "Use Session Filter", group=grp_risk)
-trade_asia        = input.bool(true, "Trade Asia", group=grp_risk)
-trade_london      = input.bool(true, "Trade London", group=grp_risk)
-trade_ny          = input.bool(true, "Trade New York", group=grp_risk)
+trade_mode        = input.string("INTRADAY", "Mode", options=["SCALP", "INTRADAY", "SWING"], group=grp_risk, display=display.none)
+scalp_stop        = input.float(20.0, "Scalp SL Buffer", minval=10.0, maxval=150.0, step=5.0, group=grp_risk, display=display.none)
+intraday_stop     = input.float(35.0, "Intraday SL Buffer", minval=10.0, maxval=300.0, step=5.0, group=grp_risk, display=display.none)
+swing_stop        = input.float(70.0, "Swing SL Buffer", minval=20.0, maxval=600.0, step=10.0, group=grp_risk, display=display.none)
+scalp_tmin        = input.float(15.0, "Scalp Target Minimum", minval=10.0, maxval=300.0, step=5.0, group=grp_risk, display=display.none)
+scalp_tmax        = input.float(80.0, "Scalp Target Maximum", minval=30.0, maxval=500.0, step=10.0, group=grp_risk, display=display.none)
+intraday_tmin     = input.float(60.0, "Intraday Target Minimum", minval=30.0, maxval=800.0, step=10.0, group=grp_risk, display=display.none)
+intraday_tmax     = input.float(250.0, "Intraday Target Maximum", minval=100.0, maxval=1500.0, step=50.0, group=grp_risk, display=display.none)
+swing_tmin        = input.float(180.0, "Swing Target Minimum", minval=100.0, maxval=2000.0, step=20.0, group=grp_risk, display=display.none)
+swing_tmax        = input.float(800.0, "Swing Target Maximum", minval=300.0, maxval=5000.0, step=100.0, group=grp_risk, display=display.none)
+minimum_rr        = input.float(0.6, "Minimum R:R", minval=0.5, maxval=1.0, step=0.1, group=grp_risk, display=display.none)
+maximum_rr        = input.float(2.5, "Maximum R:R", minval=1.0, maxval=5.0, step=0.5, group=grp_risk, display=display.none)
+snr_frontrun      = input.float(10.0, "TP / SL Before S&R", minval=5.0, maxval=100.0, step=5.0, group=grp_risk, display=display.none)
+use_session_filter= input.bool(false, "Use Session Filter", group=grp_risk, display=display.none)
+trade_asia        = input.bool(true, "Trade Asia", group=grp_risk, display=display.none)
+trade_london      = input.bool(true, "Trade London", group=grp_risk, display=display.none)
+trade_ny          = input.bool(true, "Trade New York", group=grp_risk, display=display.none)
 
 // Session
-asia_sess       = input.session("0000-0800", "Asian Session", group=grp_sess)
-london_sess     = input.session("0800-1600", "London Session", group=grp_sess)
-ny_sess         = input.session("1300-2200", "New York Session", group=grp_sess)
+asia_sess       = input.session("0000-0800", "Asian Session", group=grp_sess, display=display.none)
+london_sess     = input.session("0800-1600", "London Session", group=grp_sess, display=display.none)
+ny_sess         = input.session("1300-2200", "New York Session", group=grp_sess, display=display.none)
 
 // Trade Management
-tp1_close_pct     = input.int(50, "Close % at TP1 (0 = single exit at TP1)", minval=0, maxval=100, step=5, group=grp_trd)
-use_break_even    = input.bool(true, "Use Break-Even Protection", group=grp_trd)
-be_trigger_pips   = input.float(25.0, "BE Trigger (M15 pips)", minval=1.0, maxval=300.0, step=1.0, group=grp_trd)
-use_trail_after_be= input.bool(true, "Trail Stop After Break-Even", group=grp_trd)
-trail_atr_mult    = input.float(1.0, "Trail Distance (x ATR)", minval=0.2, maxval=3.0, step=0.1, group=grp_trd)
-result_secs       = input.int(30, "Result Visible Seconds", minval=5, maxval=3600, group=grp_trd)
+tp1_close_pct     = input.int(50, "Close % at TP1 (0 = single exit at TP1)", minval=0, maxval=100, step=5, group=grp_trd, display=display.none)
+use_break_even    = input.bool(true, "Use Break-Even Protection", group=grp_trd, display=display.none)
+be_trigger_pips   = input.float(25.0, "BE Trigger (M15 pips)", minval=1.0, maxval=300.0, step=1.0, group=grp_trd, display=display.none)
+use_trail_after_be= input.bool(true, "Trail Stop After Break-Even", group=grp_trd, display=display.none)
+trail_atr_mult    = input.float(1.0, "Trail Distance (x ATR)", minval=0.2, maxval=3.0, step=0.1, group=grp_trd, display=display.none)
+result_secs       = input.int(30, "Result Visible Seconds", minval=5, maxval=3600, group=grp_trd, display=display.none)
 
 // Alerts
-enable_alerts  = input.bool(true, "Enable Alerts", group=grp_alrt)
-alert_live_tog = input.bool(true, "Alert Trade Entry (LIVE)", group=grp_alrt)
-alert_res_tog  = input.bool(true, "Alert TP / SL / BE", group=grp_alrt)
-alert_markers  = input.bool(true, "Alert-Synced Markers", group=grp_alrt)
+enable_alerts  = input.bool(true, "Enable Alerts", group=grp_alrt, display=display.none)
+alert_live_tog = input.bool(true, "Alert Trade Entry (LIVE)", group=grp_alrt, display=display.none)
+alert_res_tog  = input.bool(true, "Alert TP / SL / BE", group=grp_alrt, display=display.none)
+alert_markers  = input.bool(true, "Alert-Synced Markers", group=grp_alrt, display=display.none)
 
 // Visuals
-bull_col          = input.color(color.new(color.teal, 0), "Bull Color", group=grp_vis)
-bear_col          = input.color(color.new(color.red, 0), "Bear Color", group=grp_vis)
-show_tps          = input.bool(false, "Show TP/SL Lines", group=grp_vis)
+show_tps          = input.bool(false, "Show TP/SL Lines", group=grp_vis, display=display.none)
 
 // =========================================================================
 // 1.5 RUNTIME GUARD
@@ -175,6 +177,7 @@ f_px(float v) => na(v) ? "-" : str.tostring(v, format.mintick)
 f_signed(float v) => na(v) ? "-" : (v > 0 ? "+" : "") + str.tostring(v, "#.##") + " PIPS"
 f_pos(string s) => s == "Top Left" ? position.top_left : s == "Top Right" ? position.top_right : s == "Bottom Left" ? position.bottom_left : s == "Bottom Right" ? position.bottom_right : position.middle_right
 f_clamp(float v, float lo, float hi) => math.max(lo, math.min(hi, v))
+f_b(bool b) => b ? 1 : 0
 f_conf(int n) => n >= 10 ? "HIGH" : n >= 7 ? "MEDIUM" : n >= 4 ? "LOW" : "THIN"
 
 // =========================================================================
@@ -221,9 +224,11 @@ vwap_slope = ta.mom(vwap_val, 3)
 vwap_bull = close > vwap_val and vwap_slope > 0
 vwap_bear = close < vwap_val and vwap_slope < 0
 
-plot(show_vwap ? vwap_val : na, "VWAP", color=color.yellow, linewidth=2)
-plot(show_vwap ? upper_band : na, "VWAP Upper", color=color.new(color.yellow, 50))
-plot(show_vwap ? lower_band : na, "VWAP Lower", color=color.new(color.yellow, 50))
+// display.pane keeps plot values out of the status line and data window.
+p_vwap  = plot(show_vwap ? vwap_val : na, "VWAP", color=col_vwap, linewidth=2, display=display.pane)
+p_upper = plot(show_vwap ? upper_band : na, "VWAP Upper", color=color.new(col_vwap, 65), linewidth=1, display=display.pane)
+p_lower = plot(show_vwap ? lower_band : na, "VWAP Lower", color=color.new(col_vwap, 65), linewidth=1, display=display.pane)
+fill(p_upper, p_lower, color=color.new(col_vwap, 94), title="VWAP Band")
 
 // =========================================================================
 // 3. MARKET STRUCTURE ENGINE (Swing, BOS, CHOCH)
@@ -340,6 +345,14 @@ var array<int>   fvg_type_arr = array.new<int>() // 1 = Bull, -1 = Bear
 var array<int>   fvg_bars_arr = array.new<int>()
 var array<box>   fvg_box_arr  = array.new<box>()
 
+f_fvg_drop(int i) =>
+    box.delete(array.get(fvg_box_arr, i))
+    array.remove(fvg_top_arr, i)
+    array.remove(fvg_bot_arr, i)
+    array.remove(fvg_type_arr, i)
+    array.remove(fvg_bars_arr, i)
+    array.remove(fvg_box_arr, i)
+
 bull_fvg_cond = low > high[2] and close[1] > high[2]
 bear_fvg_cond = high < low[2] and close[1] < low[2]
 
@@ -362,38 +375,15 @@ if barOK and bear_fvg_cond and (low[2] - high) > atr_val * fvg_min_size
 // the newest structure is never the thing that gets evicted.
 if barOK and array.size(fvg_top_arr) > 0
     for i = array.size(fvg_top_arr) - 1 to 0
-        if array.get(fvg_type_arr, i) == 1 and close < array.get(fvg_bot_arr, i)
-            if fvg_mitigated_del
-                box.delete(array.get(fvg_box_arr, i))
-                array.remove(fvg_top_arr, i)
-                array.remove(fvg_bot_arr, i)
-                array.remove(fvg_type_arr, i)
-                array.remove(fvg_bars_arr, i)
-                array.remove(fvg_box_arr, i)
-        else if array.get(fvg_type_arr, i) == -1 and close > array.get(fvg_top_arr, i)
-            if fvg_mitigated_del
-                box.delete(array.get(fvg_box_arr, i))
-                array.remove(fvg_top_arr, i)
-                array.remove(fvg_bot_arr, i)
-                array.remove(fvg_type_arr, i)
-                array.remove(fvg_bars_arr, i)
-                array.remove(fvg_box_arr, i)
+        fvg_filled = array.get(fvg_type_arr, i) == 1 ? close < array.get(fvg_bot_arr, i) : close > array.get(fvg_top_arr, i)
+        if fvg_filled and fvg_mitigated_del
+            f_fvg_drop(i)
 
     while array.size(fvg_top_arr) > 0 and bar_index - array.get(fvg_bars_arr, 0) > fvg_max_age
-        box.delete(array.get(fvg_box_arr, 0))
-        array.shift(fvg_top_arr)
-        array.shift(fvg_bot_arr)
-        array.shift(fvg_type_arr)
-        array.shift(fvg_bars_arr)
-        array.shift(fvg_box_arr)
+        f_fvg_drop(0)
 
     while array.size(fvg_top_arr) > fvg_max_size
-        box.delete(array.get(fvg_box_arr, 0))
-        array.shift(fvg_top_arr)
-        array.shift(fvg_bot_arr)
-        array.shift(fvg_type_arr)
-        array.shift(fvg_bars_arr)
-        array.shift(fvg_box_arr)
+        f_fvg_drop(0)
 
 in_bull_fvg = false
 in_bear_fvg = false
@@ -419,6 +409,14 @@ var array<int>   ob_type_arr = array.new<int>()
 var array<int>   ob_bars_arr = array.new<int>()
 var array<box>   ob_box_arr  = array.new<box>()
 
+f_ob_drop(int i) =>
+    box.delete(array.get(ob_box_arr, i))
+    array.remove(ob_top_arr, i)
+    array.remove(ob_bot_arr, i)
+    array.remove(ob_type_arr, i)
+    array.remove(ob_bars_arr, i)
+    array.remove(ob_box_arr, i)
+
 disp_bull = close > high[1] and (close - open) > atr_val * 1.5
 disp_bear = close < low[1] and (open - close) > atr_val * 1.5
 
@@ -427,28 +425,13 @@ if barOK and array.size(ob_top_arr) > 0
     for i = array.size(ob_top_arr) - 1 to 0
         bool ob_dead = array.get(ob_type_arr, i) == 1 ? close < array.get(ob_bot_arr, i) : close > array.get(ob_top_arr, i)
         if ob_dead
-            box.delete(array.get(ob_box_arr, i))
-            array.remove(ob_top_arr, i)
-            array.remove(ob_bot_arr, i)
-            array.remove(ob_type_arr, i)
-            array.remove(ob_bars_arr, i)
-            array.remove(ob_box_arr, i)
+            f_ob_drop(i)
 
     while array.size(ob_top_arr) > 0 and bar_index - array.get(ob_bars_arr, 0) > ob_max_age
-        box.delete(array.get(ob_box_arr, 0))
-        array.shift(ob_top_arr)
-        array.shift(ob_bot_arr)
-        array.shift(ob_type_arr)
-        array.shift(ob_bars_arr)
-        array.shift(ob_box_arr)
+        f_ob_drop(0)
 
     while array.size(ob_top_arr) > ob_max_count
-        box.delete(array.get(ob_box_arr, 0))
-        array.shift(ob_top_arr)
-        array.shift(ob_bot_arr)
-        array.shift(ob_type_arr)
-        array.shift(ob_bars_arr)
-        array.shift(ob_box_arr)
+        f_ob_drop(0)
 
 // P0: barOK, same reason as the FVG arrays above.
 if barOK and disp_bull and close[1] < open[1]
@@ -492,8 +475,8 @@ in_premium     = leg_valid and (is_bull_fib ? close > fib_50 : close < fib_50)
 in_optimal_buy = leg_valid and is_bull_fib and close <= fib_618 and close >= fib_50
 in_optimal_sell = leg_valid and not is_bull_fib and close >= fib_618 and close <= fib_50
 
-plot(show_fib_levels and leg_valid ? fib_50 : na, "Fib 50", color=color.new(color.gray, 30), style=plot.style_linebr)
-plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(color.silver, 40), style=plot.style_linebr)
+plot(show_fib_levels and leg_valid ? fib_50 : na, "Fib 50", color=color.new(col_dim, 30), style=plot.style_linebr, display=display.pane)
+plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(col_dim, 55), style=plot.style_linebr, display=display.pane)
 
 // =========================================================================
 // 7.5 CONFLUENCE SOURCES
@@ -518,14 +501,12 @@ regime_bear = use_regime and close < ema_f and ema_f < ema_s and ema_slope <= -e
 
 // Previous-day sweep and reclaim: dipped through the prior day's extreme
 // inside the lookback, and is back on the correct side of it now.
-pdh = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_off)
-pdl = request.security(syminfo.tickerid, "D", low[1], barmerge.gaps_off, barmerge.lookahead_off)
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], barmerge.gaps_off, barmerge.lookahead_off)
 pdsweep_bull = use_pdsweep and not na(pdl) and ta.lowest(low, pdsweep_lookback) <= pdl and close > pdl
 pdsweep_bear = use_pdsweep and not na(pdh) and ta.highest(high, pdsweep_lookback) >= pdh and close < pdh
 
 // HTF level cluster: the leg's extreme sits on the higher-timeframe swing.
-htf_swing_h = request.security(syminfo.tickerid, "240", ta.pivothigh(high, swing_len, swing_len), barmerge.gaps_off, barmerge.lookahead_off)
-htf_swing_l = request.security(syminfo.tickerid, "240", ta.pivotlow(low, swing_len, swing_len), barmerge.gaps_off, barmerge.lookahead_off)
+[htf_swing_h, htf_swing_l] = request.security(syminfo.tickerid, "240", [ta.pivothigh(high, swing_len, swing_len), ta.pivotlow(low, swing_len, swing_len)], barmerge.gaps_off, barmerge.lookahead_off)
 conf_tol      = conf_tol_pips * pip_size
 cluster_bull  = use_htf_cluster and not na(leg_low) and not na(htf_swing_l) and math.abs(leg_low - htf_swing_l) <= conf_tol
 cluster_bear  = use_htf_cluster and not na(leg_high) and not na(htf_swing_h) and math.abs(leg_high - htf_swing_h) <= conf_tol
@@ -542,18 +523,15 @@ vwap_reclaim_bear = vwap_bear and close[1] >= vwap_val[1]
 // =========================================================================
 // 8. MULTI-TIMEFRAME ENGINE
 // =========================================================================
-get_mtf_bias(timeframe) =>
-    mtf_close = request.security(syminfo.tickerid, timeframe, close, barmerge.gaps_off, barmerge.lookahead_off)
-    mtf_vwap = request.security(syminfo.tickerid, timeframe, ta.vwap(hlc3), barmerge.gaps_off, barmerge.lookahead_off)
-    mtf_slope = request.security(syminfo.tickerid, timeframe, ta.mom(ta.vwap(hlc3), 3), barmerge.gaps_off, barmerge.lookahead_off)
-    bias = mtf_close > mtf_vwap and mtf_slope > 0 ? 1 : (mtf_close < mtf_vwap and mtf_slope < 0 ? -1 : 0)
-    bias
+f_mtf_bias(string tf) =>
+    [mtf_close, mtf_vwap, mtf_slope] = request.security(syminfo.tickerid, tf, [close, ta.vwap(hlc3), ta.mom(ta.vwap(hlc3), 3)], barmerge.gaps_off, barmerge.lookahead_off)
+    mtf_close > mtf_vwap and mtf_slope > 0 ? 1 : (mtf_close < mtf_vwap and mtf_slope < 0 ? -1 : 0)
 
 // P0: M30 and M5 biases were computed and never referenced anywhere in the
 // script — six wasted request.security calls removed.
-h4_bias  = get_mtf_bias("240")
-h1_bias  = get_mtf_bias("60")
-m15_bias = get_mtf_bias("15")
+h4_bias  = f_mtf_bias("240")
+h1_bias  = f_mtf_bias("60")
+m15_bias = f_mtf_bias("15")
 
 htf_bull = h4_bias == 1 and h1_bias == 1
 htf_bear = h4_bias == -1 and h1_bias == -1
@@ -595,15 +573,22 @@ score_conf  = conf_bull ? 10 : (conf_bear ? -10 : 0)
 // P3/P5: how many independent things agree. P5 added seven more sources: a
 // live swing leg, round numbers, EMA regime, previous-day sweep and reclaim,
 // HTF level cluster, displacement, and a VWAP cross. Max is 15.
-conf_bull_n = (score_vwap>0?1:0) + (score_htf>0?1:0) + (score_smc>0?1:0) + (score_liq>0?1:0) + (score_fvg>0?1:0) + (score_ob>0?1:0) + (score_fib>0?1:0) + (score_conf>0?1:0) +
-     (leg_valid?1:0) + (brn_bull?1:0) + (regime_bull?1:0) + (pdsweep_bull?1:0) + (cluster_bull?1:0) + (disp_bull_src?1:0) + (vwap_reclaim_bull?1:0)
-conf_bear_n = (score_vwap<0?1:0) + (score_htf<0?1:0) + (score_smc<0?1:0) + (score_liq<0?1:0) + (score_fvg<0?1:0) + (score_ob<0?1:0) + (score_fib<0?1:0) + (score_conf<0?1:0) +
-     (leg_valid?1:0) + (brn_bear?1:0) + (regime_bear?1:0) + (pdsweep_bear?1:0) + (cluster_bear?1:0) + (disp_bear_src?1:0) + (vwap_reclaim_bear?1:0)
+conf_bull_n = f_b(score_vwap > 0) + f_b(score_htf > 0) + f_b(score_smc > 0) + f_b(score_liq > 0) + f_b(score_fvg > 0) + f_b(score_ob > 0) + f_b(score_fib > 0) + f_b(score_conf > 0) +
+     f_b(leg_valid) + f_b(brn_bull) + f_b(regime_bull) + f_b(pdsweep_bull) + f_b(cluster_bull) + f_b(disp_bull_src) + f_b(vwap_reclaim_bull)
+conf_bear_n = f_b(score_vwap < 0) + f_b(score_htf < 0) + f_b(score_smc < 0) + f_b(score_liq < 0) + f_b(score_fvg < 0) + f_b(score_ob < 0) + f_b(score_fib < 0) + f_b(score_conf < 0) +
+     f_b(leg_valid) + f_b(brn_bear) + f_b(regime_bear) + f_b(pdsweep_bear) + f_b(cluster_bear) + f_b(disp_bear_src) + f_b(vwap_reclaim_bear)
 // conf_dir/count live in section 10, after t_dir and the signal flags they
 // read — Pine has no forward references.
 
-bull_score = (score_vwap>0?score_vwap:0) + (score_htf>0?score_htf:0) + (score_smc>0?score_smc:0) + (score_liq>0?score_liq:0) + (score_fvg>0?score_fvg:0) + (score_ob>0?score_ob:0) + (score_fib>0?score_fib:0) + (score_conf>0?score_conf:0)
-bear_score = math.abs((score_vwap<0?score_vwap:0) + (score_htf<0?score_htf:0) + (score_smc<0?score_smc:0) + (score_liq<0?score_liq:0) + (score_fvg<0?score_fvg:0) + (score_ob<0?score_ob:0) + (score_fib<0?score_fib:0) + (score_conf<0?score_conf:0))
+bull_score = math.max(score_vwap, 0) + math.max(score_htf, 0) + math.max(score_smc, 0) + math.max(score_liq, 0) + math.max(score_fvg, 0) + math.max(score_ob, 0) + math.max(score_fib, 0) + math.max(score_conf, 0)
+bear_score = math.max(-score_vwap, 0) + math.max(-score_htf, 0) + math.max(-score_smc, 0) + math.max(-score_liq, 0) + math.max(-score_fvg, 0) + math.max(-score_ob, 0) + math.max(-score_fib, 0) + math.max(-score_conf, 0)
+
+// Which evidence fired, as words. The score says how much; this says what.
+why_txt = (smc_state != "FLAT" ? smc_state + " " : "") +
+     (score_vwap != 0 ? "VWAP " : "") + (score_htf != 0 ? "HTF " : "") +
+     (score_liq != 0 ? "SWEEP " : "") + (score_fvg != 0 ? "FVG " : "") +
+     (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : (in_premium ? "PREMIUM " : "")) : "") +
+     (score_conf != 0 ? "CONF " : "")
 
 var int last_signal_bar = 0
 is_cooldown = (bar_index - last_signal_bar) < cooldown_bars
@@ -673,7 +658,7 @@ var float  t_sl        = na
 var float  t_tp1       = na
 var float  t_tp3       = na
 var float  t_exit      = na
-var float  t_start_bar = na
+var int    t_start_bar = na
 var int    t_open      = 100      // percent of the intended size still open
 var float  t_realised  = 0.0      // pips banked from closed portions
 var bool   t_tp1_done  = false
@@ -887,13 +872,7 @@ if t_state == "ACTIVE" and barOK and not na(t_start_bar) and bar_index > t_start
         r_exit    := t_exit
         r_pips    := t_realised
         r_be      := t_be_armed
-        // Which evidence actually fired, as words. The weighted score says how
-        // much; this says what.
-        r_reason  := (smc_state != "FLAT" ? smc_state + " " : "") +
-                     (score_vwap != 0 ? "VWAP " : "") + (score_htf != 0 ? "HTF " : "") +
-                     (score_liq != 0 ? "SWEEP " : "") + (score_fvg != 0 ? "FVG " : "") +
-                     (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : (in_premium ? "PREMIUM " : "")) : "") +
-                     (score_conf != 0 ? "CONF " : "") + (t_be_armed ? "BE " : "")
+        r_reason  := why_txt + (t_be_armed ? "BE " : "")
         r_conf    := conf_count
         r_hide_at := (barstate.islast ? timenow : time_close) + result_secs * 1000
 
@@ -933,6 +912,10 @@ if r_expired and t_state != "ACTIVE"
 //
 // repaint order matters: clear both grids on every last bar, then fill. A
 // field that stops being populated would otherwise leave a ghost row.
+f_row(table t, int r, string k, string v, color vc, color bg = na, color kc = na, int align = text.align_right) =>
+    table.cell(t, 0, r, k, bgcolor=bg, text_color=na(kc) ? col_dim : kc, text_size=size.small)
+    table.cell(t, 1, r, v, bgcolor=bg, text_color=vc, text_size=size.small, text_halign=align)
+
 var table dash = table.new(f_pos(dash_pos), 2, 4, bgcolor=col_panel, frame_color=col_frame, frame_width=1, border_color=color.new(col_frame, 60), border_width=1)
 var table card = table.new(f_pos(card_pos), 2, 8, bgcolor=col_panel, frame_color=col_frame, frame_width=1, border_color=color.new(col_frame, 60), border_width=1)
 
@@ -947,14 +930,10 @@ if show_dash and barstate.islast
     status_col = t_state == "ACTIVE" ? (t_dir == "BUY" ? col_buy : col_sell) : (trade_busy ? col_warn : col_dim)
     sess_txt   = in_london ? "LONDON" : (in_ny ? "NEW YORK" : (in_asia ? "ASIA" : "OFF-HOURS"))
 
-    table.cell(dash, 0, 0, "MODE",    bgcolor=col_header, text_color=col_dim,  text_size=size.small)
-    table.cell(dash, 1, 0, trade_mode + " " + syminfo.ticker + " " + timeframe.period, bgcolor=col_header, text_color=col_text, text_size=size.small, text_halign=text.align_right)
-    table.cell(dash, 0, 1, "BIAS",    text_color=col_dim,  text_size=size.small)
-    table.cell(dash, 1, 1, bias_txt,  text_color=bias_col, text_size=size.small, text_halign=text.align_right)
-    table.cell(dash, 0, 2, "STATUS",  text_color=col_dim,  text_size=size.small)
-    table.cell(dash, 1, 2, status_txt, text_color=status_col, text_size=size.small, text_halign=text.align_right)
-    table.cell(dash, 0, 3, "SESSION", text_color=col_dim,  text_size=size.small)
-    table.cell(dash, 1, 3, sess_txt,  text_color=in_session ? col_text : col_dim, text_size=size.small, text_halign=text.align_right)
+    f_row(dash, 0, "MODE",    trade_mode + " " + syminfo.ticker + " " + timeframe.period, col_text, col_header)
+    f_row(dash, 1, "BIAS",    bias_txt,   bias_col)
+    f_row(dash, 2, "STATUS",  status_txt, status_col)
+    f_row(dash, 3, "SESSION", sess_txt,   in_session ? col_text : col_dim)
 
 if show_card and barstate.islast
     // The card shows the live trade while there is one, and the frozen result
@@ -972,23 +951,16 @@ if show_card and barstate.islast
         float  c_pips  = showing_result ? r_pips : t_pips_live
         int    c_conf  = showing_result ? r_conf : conf_count
         string c_score = showing_result ? "-" : str.tostring(t_dir == "SELL" ? bear_score : bull_score, "#") + "/100"
-        string c_why   = (showing_result ? r_reason : (smc_state + " " + (score_vwap != 0 ? "VWAP " : "") + (score_htf != 0 ? "HTF " : "") + (score_liq != 0 ? "SWEEP " : "") + (score_fvg != 0 ? "FVG " : "") + (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : (in_premium ? "PREMIUM " : "")) : "") + (score_conf != 0 ? "CONF " : "") + (t_be_armed ? "BE " : ""))) + "\nOPEN " + str.tostring(t_open) + "%"
+        string c_why   = showing_result ? r_reason : why_txt + (t_be_armed ? "BE " : "") + "\nOPEN " + str.tostring(t_open) + "%"
 
         table.cell(card, 0, 0, c_title, bgcolor=c_head, text_color=col_text, text_size=size.small)
-        table.cell(card, 0, 1, "MODE",       text_color=col_dim,  text_size=size.small)
-        table.cell(card, 1, 1, c_kind + " • " + c_score, text_color=col_text, text_size=size.small, text_halign=text.align_right)
-        table.cell(card, 0, 2, "CONFIDENCE", text_color=col_dim,  text_size=size.small)
-        table.cell(card, 1, 2, f_conf(c_conf) + " (" + str.tostring(c_conf) + "/" + str.tostring(CONF_MAX) + ")", text_color=c_conf >= 7 ? col_buy : (c_conf >= 4 ? col_text : col_warn), text_size=size.small, text_halign=text.align_right)
-        table.cell(card, 0, 3, "ENTRY", text_color=col_dim,  text_size=size.small)
-        table.cell(card, 1, 3, f_px(c_entry), text_color=col_text, text_size=size.small, text_halign=text.align_right)
-        table.cell(card, 0, 4, "TP", text_color=col_dim,  text_size=size.small)
-        table.cell(card, 1, 4, f_px(c_tp), text_color=col_buy, text_size=size.small, text_halign=text.align_right)
-        table.cell(card, 0, 5, "SL", text_color=col_dim,  text_size=size.small)
-        table.cell(card, 1, 5, f_px(c_sl), text_color=col_sell, text_size=size.small, text_halign=text.align_right)
-        table.cell(card, 0, 6, "P/L", text_color=col_dim,  text_size=size.small)
-        table.cell(card, 1, 6, f_signed(c_pips), text_color=na(c_pips) ? col_dim : (c_pips >= 0 ? col_buy : col_sell), text_size=size.small, text_halign=text.align_right)
-        table.cell(card, 0, 7, "WHY THIS TRADE", text_color=col_dim, text_size=size.small)
-        table.cell(card, 1, 7, c_why, text_color=col_text, text_size=size.small, text_halign=text.align_left)
+        f_row(card, 1, "SETUP",      c_kind + " • " + c_score, col_text)
+        f_row(card, 2, "CONFIDENCE", f_conf(c_conf) + " (" + str.tostring(c_conf) + "/" + str.tostring(CONF_MAX) + ")", c_conf >= 7 ? col_buy : (c_conf >= 4 ? col_text : col_warn))
+        f_row(card, 3, "ENTRY",      f_px(c_entry), col_text)
+        f_row(card, 4, "TP",         f_px(c_tp), col_buy)
+        f_row(card, 5, "SL",         f_px(c_sl), col_sell)
+        f_row(card, 6, "P/L",        f_signed(c_pips), na(c_pips) ? col_dim : (c_pips >= 0 ? col_buy : col_sell))
+        f_row(card, 7, "WHY",        c_why, col_text, align=text.align_left)
 
 // =========================================================================
 // 12. VISUALIZATION ENGINE
@@ -997,13 +969,13 @@ if show_card and barstate.islast
 // P0: bos_*/choch_* already require barOK internally, so the extra guard is gone.
 if show_struct
     if bos_bull
-        label.new(bar_index, low, "BOS+", style=label.style_label_up, color=bull_col, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, low, "BOS+", style=label.style_label_up, color=bull_col, textcolor=col_text, size=size.tiny)
     if choch_bull
-        label.new(bar_index, low, "CHOCH+", style=label.style_label_up, color=bull_col, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, low, "CHOCH+", style=label.style_label_up, color=bull_col, textcolor=col_text, size=size.tiny)
     if bos_bear
-        label.new(bar_index, high, "BOS-", style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, high, "BOS-", style=label.style_label_down, color=bear_col, textcolor=col_text, size=size.tiny)
     if choch_bear
-        label.new(bar_index, high, "CHOCH-", style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, high, "CHOCH-", style=label.style_label_down, color=bear_col, textcolor=col_text, size=size.tiny)
 
 // FVG and order block boxes are created and destroyed alongside their records
 // in sections 5 and 6, which is why they are not drawn here.
@@ -1012,21 +984,16 @@ if show_struct
 // P0: liq_sweep_* already require barOK internally.
 if show_liq
     if liq_sweep_sell
-        label.new(bar_index, low, "Liq+", style=label.style_label_up, color=color.orange, size=size.tiny)
+        label.new(bar_index, low, "Liq+", style=label.style_label_up, color=col_warn, textcolor=col_text, size=size.tiny)
     if liq_sweep_buy
-        label.new(bar_index, high, "Liq-", style=label.style_label_down, color=color.orange, size=size.tiny)
+        label.new(bar_index, high, "Liq-", style=label.style_label_down, color=col_warn, textcolor=col_text, size=size.tiny)
 
-// Signals
-// P0: buy_signal/sell_signal already require barstate.isconfirmed inside the
-// signal block, so the redundant guard is gone.
-plotshape_buy = buy_signal
-plotshape_sell = sell_signal
 
 // Mode targets. P6: the fixed 1R/2R/3R ladder is gone — TP1 is the partial
 // (halfway to plan) and TP the runner (full plan). TP2 had no other reader.
-plot(show_tps and not na(t_tp1) ? t_tp1 : na, "TP1", color=color.new(bull_col, 40), style=plot.style_linebr, linewidth=1)
-plot(show_tps and not na(t_tp3) ? t_tp3 : na, "TP", color=color.new(bull_col, 75), style=plot.style_linebr, linewidth=1)
-plot(show_tps and not na(t_sl) ? t_sl : na, "SL", color=color.new(bear_col, 25), style=plot.style_linebr, linewidth=2)
+plot(show_tps and not na(t_tp1) ? t_tp1 : na, "TP1", color=color.new(bull_col, 40), style=plot.style_linebr, linewidth=1, display=display.pane)
+plot(show_tps and not na(t_tp3) ? t_tp3 : na, "TP", color=color.new(bull_col, 75), style=plot.style_linebr, linewidth=1, display=display.pane)
+plot(show_tps and not na(t_sl) ? t_sl : na, "SL", color=color.new(bear_col, 25), style=plot.style_linebr, linewidth=2, display=display.pane)
 
 // P2: markers moved from the signal bar to the bar the position actually
 // opens, because that is the bar the levels belong to. Exit markers report
@@ -1034,14 +1001,14 @@ plot(show_tps and not na(t_sl) ? t_sl : na, "SL", color=color.new(bear_col, 25),
 if live_event
     label.new(bar_index, t_dir == "BUY" ? low : high, t_dir + "\n" + t_kind,
          style=t_dir == "BUY" ? label.style_label_up : label.style_label_down,
-         color=t_dir == "BUY" ? bull_col : bear_col, textcolor=color.white, size=size.normal)
+         color=t_dir == "BUY" ? bull_col : bear_col, textcolor=col_text, size=size.normal)
 
 if tp_event
-    label.new(bar_index, close, "TP " + f_signed(r_pips), style=label.style_label_left, color=color.new(color.lime, 20), textcolor=color.white, size=size.tiny)
+    label.new(bar_index, close, "TP " + f_signed(r_pips), style=label.style_label_left, color=color.new(col_buy, 20), textcolor=col_text, size=size.tiny)
 if be_event
-    label.new(bar_index, close, "BE " + f_signed(r_pips), style=label.style_label_left, color=color.new(color.orange, 20), textcolor=color.white, size=size.tiny)
+    label.new(bar_index, close, "BE " + f_signed(r_pips), style=label.style_label_left, color=color.new(col_warn, 20), textcolor=col_text, size=size.tiny)
 if sl_event
-    label.new(bar_index, close, "SL " + f_signed(r_pips), style=label.style_label_right, color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
+    label.new(bar_index, close, "SL " + f_signed(r_pips), style=label.style_label_right, color=color.new(col_sell, 20), textcolor=col_text, size=size.tiny)
 
 // =========================================================================
 // 13. ALERT ENGINE
@@ -1057,8 +1024,8 @@ if sl_event
 // v6: alertcondition() message must be const string; dynamic content is left
 // to TradingView's native {{ticker}} / {{close}} / {{interval}} interpolation
 // inside the alert dialog.
-alertcondition(plotshape_buy, "BUY Signal", "BUY {{ticker}}")
-alertcondition(plotshape_sell, "SELL Signal", "SELL {{ticker}}")
+alertcondition(buy_signal, "BUY Signal", "BUY {{ticker}}")
+alertcondition(sell_signal, "SELL Signal", "SELL {{ticker}}")
 alertcondition(bos_bull, "BOS Bullish", "BOS Bullish detected on {{ticker}}")
 alertcondition(choch_bull, "CHOCH Bullish", "CHOCH Bullish detected on {{ticker}}")
 alertcondition(bos_bear, "BOS Bearish", "BOS Bearish detected on {{ticker}}")
@@ -1120,7 +1087,7 @@ if enable_alerts and alert_res_tog and barstate.isrealtime and (tp_event or sl_e
 if alert_markers and live_event and array.indexof(marker_setups, t_setup) == -1
     label m = label.new(bar_index, t_dir == "BUY" ? low : high, t_dir + " LIVE",
          style=t_dir == "BUY" ? label.style_label_up : label.style_label_down,
-         color=color.new(t_dir == "BUY" ? bull_col : bear_col, 25), textcolor=color.white,
+         color=color.new(t_dir == "BUY" ? bull_col : bear_col, 25), textcolor=col_text,
          size=size.tiny, tooltip="ALERT-SYNCED " + t_dir)
     array.push(marker_setups, t_setup)
     array.push(marker_labels, m)
@@ -1132,7 +1099,7 @@ if alert_markers and live_event and array.indexof(marker_setups, t_setup) == -1
 if live_event and alert_markers and na(live_badge)
     live_badge := label.new(bar_index, t_dir == "BUY" ? low : high, t_dir + " ACTIVE",
          style=t_dir == "BUY" ? label.style_label_up : label.style_label_down,
-         color=color.new(t_dir == "BUY" ? bull_col : bear_col, 55), textcolor=color.white, size=size.tiny)
+         color=color.new(t_dir == "BUY" ? bull_col : bear_col, 55), textcolor=col_text, size=size.tiny)
 else if t_state != "ACTIVE" and not na(live_badge)
     label.delete(live_badge)
-    live_badge := na
+    live_badge := na
