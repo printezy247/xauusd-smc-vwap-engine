@@ -1054,8 +1054,11 @@ if sl_event
 //
 // P0 note, still true: bos_*/choch_*/liq_sweep_* are already barOK-gated, so
 // these conditions add no check of their own.
-alertcondition(plotshape_buy, "BUY Signal", "BUY {{ticker}} {{interval}} — " + entry_type_str)
-alertcondition(plotshape_sell, "SELL Signal", "SELL {{ticker}} {{interval}} — " + entry_type_str)
+// v6: alertcondition() message must be const string; dynamic content is left
+// to TradingView's native {{ticker}} / {{close}} / {{interval}} interpolation
+// inside the alert dialog.
+alertcondition(plotshape_buy, "BUY Signal", "BUY {{ticker}}")
+alertcondition(plotshape_sell, "SELL Signal", "SELL {{ticker}}")
 alertcondition(bos_bull, "BOS Bullish", "BOS Bullish detected on {{ticker}}")
 alertcondition(choch_bull, "CHOCH Bullish", "CHOCH Bullish detected on {{ticker}}")
 alertcondition(bos_bear, "BOS Bearish", "BOS Bearish detected on {{ticker}}")
@@ -1064,15 +1067,15 @@ alertcondition(liq_sweep_sell, "Liquidity Sweep Sell", "Sell-side Liquidity Swee
 alertcondition(liq_sweep_buy, "Liquidity Sweep Buy", "Buy-side Liquidity Sweep on {{ticker}} (Bearish Reversal)")
 // Reclaim is a cross, so the prior bar must be at-or-below, not strictly
 // below. Strict "<" silently skipped the exact-touch case.
-alertcondition(barOK and close > vwap_val and close[1] <= vwap_val[1], "VWAP Reclaim Bullish", "Price reclaimed VWAP Bullish on {{ticker}}")
-alertcondition(barOK and close < vwap_val and close[1] >= vwap_val[1], "VWAP Reclaim Bearish", "Price lost VWAP Bearish on {{ticker}}")
+alertcondition(barOK and close > vwap_val and close[1] <= vwap_val[1], "VWAP Reclaim Bullish", "Price reclaimed VWAP Bullish")
+alertcondition(barOK and close < vwap_val and close[1] >= vwap_val[1], "VWAP Reclaim Bearish", "Price lost VWAP Bearish")
 
 // Realtime-only lifecycle mirrors, for anyone wiring TradingView's native
 // alert dialog instead of the dynamic alert() calls below.
-alertcondition(live_event and barstate.isrealtime, "Trade LIVE", "LIVE {{ticker}} " + t_dir + " " + t_kind + " @ {{close}}")
-alertcondition(tp_event and barstate.isrealtime, "Take Profit", "TP {{ticker}} " + r_dir + " " + f_signed(r_pips))
-alertcondition(be_event and barstate.isrealtime, "Break-Even", "BE {{ticker}} " + r_dir + " " + f_signed(r_pips))
-alertcondition(sl_event and barstate.isrealtime, "Stop Loss", "SL {{ticker}} " + r_dir + " " + f_signed(r_pips))
+alertcondition(live_event and barstate.isrealtime, "Trade LIVE", "LIVE trade")
+alertcondition(tp_event and barstate.isrealtime, "Take Profit", "Take Profit")
+alertcondition(be_event and barstate.isrealtime, "Break-Even", "Break Even")
+alertcondition(sl_event and barstate.isrealtime, "Stop Loss", "Stop Loss")
 
 // -- dynamic alerts -------------------------------------------------------
 const int MAX_MARKERS = 33
