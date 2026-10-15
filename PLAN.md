@@ -15,8 +15,8 @@ alert work: `EzyMapPro_v1_8.pine` (Pine v6, local copy at
 | **P3** | Dashboard rebuild, EzyMap style | **done** |
 | **P1** | Structure integrity | **done** |
 | **P5** | Confluence scoring | **done** |
-| P6 | Risk model + modes | next |
-| P7 | v6 migration + backtest harness | queued |
+| **P6** | Risk model + modes | **done** |
+| P7 | v6 migration + backtest harness | next |
 
 Build order is **P0 → P2 → P4 → P3 → P1 → P5 → P6 → P7**. Position lifecycle
 before the dashboard, because the card renders state that does not exist yet.
@@ -43,6 +43,17 @@ before the dashboard, because the card renders state that does not exist yet.
 
 ## Still open
 
+- **BEHAVIOUR CHANGE (P6): fixed 1R/2R/3R ladder is gone.** SL/TP now come
+  from the mode-driven EzyMap G3 model (SCALP/INTRADAY/SWING): volatility
+  floor, S&R front-run, min/max RR clamp, ATR/risk fallback. TP1 is the
+  partial halfway to plan, TP the runner for the full plan. `atr_sl_mult`
+  deleted (superseded by per-mode stop ATR multiples); `t_tp2` and its
+  plot deleted (no other reader). Trade card, R:R readout and LIVE alert
+  now quote the final target, not TP1.
+- **ANCHOR FIX (P6):** anchored VWAP defaults to the session open and
+  restarts daily ("Swing Leg" / "Fixed Date" selectable); bands follow
+  the active line (B6). Manual `var` sums also cleared the two `ta.cum`
+  v6 blockers a phase early. `volume` is nz-guarded now.
 - **BEHAVIOUR CHANGE (P5): min_score → min_conf.** The signal gate was a
   0-100 weighted sum (`bull_score >= min_score`, default 60). It is now a
   count of agreeing independent sources (`conf_bull_n >= min_conf`,

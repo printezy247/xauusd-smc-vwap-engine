@@ -11,6 +11,7 @@ grp_fvg   = "FVG Settings"
 grp_ob    = "Order Block Settings"
 grp_fib   = "Fibonacci Settings"
 grp_conf  = "Confluence"
+grp_risk  = "Risk"
 grp_atr   = "ATR & Volatility"
 grp_sess  = "Session"
 grp_sig   = "Signal Settings"
@@ -23,7 +24,8 @@ grp_vis   = "Visual Settings"
 // VWAP
 show_vwap         = input.bool(true, "Show Session VWAP", group=grp_vwap)
 show_vwap_anchored= input.bool(false, "Show Anchored VWAP", group=grp_vwap)
-anchor_date       = input.time(timestamp("2024-01-01 00:00"), "Anchor Date", group=grp_vwap)
+anchor_src        = input.string("Session", "Anchor Mode", options=["Session", "Swing Leg", "Fixed Date"], group=grp_vwap)
+anchor_date       = input.time(timestamp("2024-01-01 00:00"), "Anchor Date (Fixed Date mode)", group=grp_vwap)
 vwap_mult         = input.float(1.5, "VWAP Band Multiplier", group=grp_vwap)
 
 // SMC
@@ -56,7 +58,6 @@ show_fib_levels   = input.bool(false, "Show Fibonacci 50 / 61.8", group=grp_fib)
 atr_len           = input.int(14, "ATR Length", group=grp_atr)
 atr_base_len      = input.int(50, "ATR Baseline Length", minval=1, group=grp_atr)
 min_atr_ratio     = input.float(0.0, "Min ATR Ratio (x baseline, 0 = off)", minval=0.0, step=0.05, group=grp_atr)
-atr_sl_mult       = input.float(1.5, "ATR SL Buffer Multiplier", group=grp_atr)
 
 // Signals (P5: the gate is now a confluence count, not a weighted sum — the
 // number is visible on the trade card and tunable while the chart is open)
@@ -91,6 +92,27 @@ use_pdsweep       = input.bool(true, "Previous-Day Sweep + Reclaim", group=grp_c
 pdsweep_lookback  = input.int(6, "Sweep Lookback (bars)", minval=2, maxval=20, group=grp_conf)
 use_htf_cluster   = input.bool(true, "HTF Level Cluster", group=grp_conf)
 
+// Risk — EzyMapPro G3 model. Stops and targets derive from the mode, not
+// from fixed R multiples. ATR multiples stay hardcoded per mode exactly as
+// in EzyMap (stop 0.40/0.60/0.85, target 0.60/1.00/1.50).
+trade_mode        = input.string("INTRADAY", "Mode", options=["SCALP", "INTRADAY", "SWING"], group=grp_risk)
+scalp_stop        = input.float(20.0, "Scalp SL Buffer", minval=10.0, maxval=150.0, step=5.0, group=grp_risk)
+intraday_stop     = input.float(35.0, "Intraday SL Buffer", minval=10.0, maxval=300.0, step=5.0, group=grp_risk)
+swing_stop        = input.float(70.0, "Swing SL Buffer", minval=20.0, maxval=600.0, step=10.0, group=grp_risk)
+scalp_tmin        = input.float(15.0, "Scalp Target Minimum", minval=10.0, maxval=300.0, step=5.0, group=grp_risk)
+scalp_tmax        = input.float(80.0, "Scalp Target Maximum", minval=30.0, maxval=500.0, step=10.0, group=grp_risk)
+intraday_tmin     = input.float(60.0, "Intraday Target Minimum", minval=30.0, maxval=800.0, step=10.0, group=grp_risk)
+intraday_tmax     = input.float(250.0, "Intraday Target Maximum", minval=100.0, maxval=1500.0, step=50.0, group=grp_risk)
+swing_tmin        = input.float(180.0, "Swing Target Minimum", minval=100.0, maxval=2000.0, step=20.0, group=grp_risk)
+swing_tmax        = input.float(800.0, "Swing Target Maximum", minval=300.0, maxval=5000.0, step=100.0, group=grp_risk)
+minimum_rr        = input.float(0.6, "Minimum R:R", minval=0.5, maxval=1.0, step=0.1, group=grp_risk)
+maximum_rr        = input.float(2.5, "Maximum R:R", minval=1.0, maxval=5.0, step=0.5, group=grp_risk)
+snr_frontrun      = input.float(10.0, "TP / SL Before S&R", minval=5.0, maxval=100.0, step=5.0, group=grp_risk)
+use_session_filter= input.bool(false, "Use Session Filter", group=grp_risk)
+trade_asia        = input.bool(true, "Trade Asia", group=grp_risk)
+trade_london      = input.bool(true, "Trade London", group=grp_risk)
+trade_ny          = input.bool(true, "Trade New York", group=grp_risk)
+
 // Session
 asia_sess       = input.session("0000-0800", "Asian Session", group=grp_sess)
 london_sess     = input.session("0800-1600", "London Session", group=grp_sess)
@@ -113,7 +135,7 @@ alert_markers  = input.bool(true, "Alert-Synced Markers", group=grp_alrt)
 // Visuals
 bull_col          = input.color(color.new(color.teal, 0), "Bull Color", group=grp_vis)
 bear_col          = input.color(color.new(color.red, 0), "Bear Color", group=grp_vis)
-show_tps          = input.bool(false, "Show TP Ladder (1R/2R/3R)", group=grp_vis)
+show_tps          = input.bool(false, "Show TP/SL Lines", group=grp_vis)
 
 // =========================================================================
 // 1.5 RUNTIME GUARD
@@ -140,6 +162,7 @@ f_pips(bool is_buy, float entry, float px) => is_buy ? (px - entry) / pip_size :
 f_px(float v) => na(v) ? "-" : str.tostring(v, format.mintick)
 f_signed(float v) => na(v) ? "-" : (v > 0 ? "+" : "") + str.tostring(v, "#.##") + " PIPS"
 f_pos(string s) => s == "Top Left" ? position.top_left : s == "Top Right" ? position.top_right : s == "Bottom Left" ? position.bottom_left : s == "Bottom Right" ? position.bottom_right : position.middle_right
+f_clamp(float v, float lo, float hi) => math.max(lo, math.min(hi, v))
 f_conf(int n) => n >= 10 ? "HIGH" : n >= 7 ? "MEDIUM" : n >= 4 ? "LOW" : "THIN"
 
 // =========================================================================
@@ -148,13 +171,38 @@ f_conf(int n) => n >= 10 ? "HIGH" : n >= 7 ? "MEDIUM" : n >= 4 ? "LOW" : "THIN"
 src_hlc3 = hlc3
 session_vwap = ta.vwap(src_hlc3)
 std_dev = ta.stdev(src_hlc3, 20)
-upper_band = session_vwap + std_dev * vwap_mult
-lower_band = session_vwap - std_dev * vwap_mult
 
-is_anchored = time >= anchor_date
-anc_vol = ta.cum(is_anchored ? volume : 0)
-anc_pv  = ta.cum(is_anchored ? src_hlc3 * volume : 0)
-anchored_vwap = anc_vol > 0 ? anc_pv / anc_vol : na
+// P6: anchor_date 2024-01-01 turned the anchored line into a flat two-year
+// average. The anchor now defaults to the session (daily) open and restarts
+// every day; "Swing Leg" restarts at the last completed leg; "Fixed Date"
+// keeps the old input for manual work. Sums are manual `var` accumulators,
+// which also clears the two ta.cum v6 blockers (P7) a phase early.
+// volume is nz-guarded: a na print used to poison the whole average.
+var float anc_pv_sum       = 0.0
+var float anc_vol_sum      = 0.0
+var bool  leg_anchor_reset = false
+day_chg = ta.change(time("D"))
+new_day = not na(day_chg) and day_chg != 0
+anchor_reset = anchor_src == "Session" ? new_day : anchor_src == "Swing Leg" ? leg_anchor_reset : false
+
+if anchor_src == "Fixed Date"
+    if time >= anchor_date
+        anc_pv_sum  := anc_pv_sum + nz(src_hlc3 * volume, 0.0)
+        anc_vol_sum := anc_vol_sum + nz(volume, 0.0)
+else if anchor_reset
+    anc_pv_sum  := nz(src_hlc3 * volume, 0.0)
+    anc_vol_sum := nz(volume, 0.0)
+else
+    anc_pv_sum  := anc_pv_sum + nz(src_hlc3 * volume, 0.0)
+    anc_vol_sum := anc_vol_sum + nz(volume, 0.0)
+leg_anchor_reset := false
+anchored_vwap = anc_vol_sum > 0 ? anc_pv_sum / anc_vol_sum : na
+
+// B6: the bands used to hug the session line even in anchored mode. They now
+// follow the active line. std_dev itself stays a session-rolling stdev.
+band_base  = show_vwap_anchored ? anchored_vwap : session_vwap
+upper_band = band_base + std_dev * vwap_mult
+lower_band = band_base - std_dev * vwap_mult
 
 vwap_val = show_vwap_anchored ? anchored_vwap : session_vwap
 vwap_slope = ta.mom(vwap_val, 3)
@@ -226,6 +274,7 @@ if not na(ph)
         leg_high := ph
         leg_low  := prev_l
         leg_up   := true
+        leg_anchor_reset := true
     swing_h_dir := na(prev_h) ? 0 : (ph > prev_h ? 1 : -1)
     last_swing_h := ph
 
@@ -234,6 +283,7 @@ if not na(pl)
         leg_high := prev_h
         leg_low  := pl
         leg_up   := false
+        leg_anchor_reset := true
     swing_l_dir := na(prev_l) ? 0 : (pl < prev_l ? -1 : 1)
     last_swing_l := pl
 
@@ -502,6 +552,9 @@ in_london = not na(time(timeframe.period, london_sess))
 in_ny     = not na(time(timeframe.period, ny_sess))
 in_session = in_london or in_ny or in_asia
 
+// P6: opt-in session filter. Off by default so default behaviour is unchanged.
+sess_ok = not use_session_filter or (trade_asia and in_asia) or (trade_london and in_london) or (trade_ny and in_ny)
+
 // =========================================================================
 // 9. ENTRY ENGINE & SCORING
 // =========================================================================
@@ -564,7 +617,7 @@ buy_signal = false
 sell_signal = false
 entry_type_str = ""
 
-if barstate.isconfirmed and vol_ok and not is_cooldown
+if barstate.isconfirmed and vol_ok and sess_ok and not is_cooldown
     if gate_bull
         buy_signal := true
         entry_type_str := tier_bull
@@ -603,7 +656,6 @@ var int    t_setup     = 0
 var float  t_entry     = na
 var float  t_sl        = na
 var float  t_tp1       = na
-var float  t_tp2       = na
 var float  t_tp3       = na
 var float  t_exit      = na
 var float  t_start_bar = na
@@ -643,7 +695,21 @@ if (buy_signal or sell_signal) and not trade_busy
 
 if pend_entry and barOK
     float px       = open
-    float atr_stop = atr_val * atr_sl_mult
+    // P6: EzyMap G3 risk model. Stops and targets derive from the mode, not
+    // from fixed R multiples: a volatility floor (buffer vs ATR), an S&R
+    // front-run so TP never sits exactly on a level, and an RR clamp.
+    float stop_buf_pips = trade_mode == "SCALP" ? scalp_stop : trade_mode == "INTRADAY" ? intraday_stop : swing_stop
+    float tgt_min_pips  = trade_mode == "SCALP" ? scalp_tmin : trade_mode == "INTRADAY" ? intraday_tmin : swing_tmin
+    float tgt_max_pips  = trade_mode == "SCALP" ? scalp_tmax : trade_mode == "INTRADAY" ? intraday_tmax : swing_tmax
+    float stop_atr_mult = trade_mode == "SCALP" ? 0.40 : trade_mode == "INTRADAY" ? 0.60 : 0.85
+    float tgt_atr_mult  = trade_mode == "SCALP" ? 0.60 : trade_mode == "INTRADAY" ? 1.00 : 1.50
+    float snr_buf   = snr_frontrun * pip_size
+    float stop_buf  = stop_buf_pips * pip_size
+    float tgt_min_d = tgt_min_pips * pip_size
+    float tgt_max_d = tgt_max_pips * pip_size
+    float atr_ref   = nz(atr_val, tgt_min_d)
+    float vol_stop  = math.max(stop_buf, atr_ref * stop_atr_mult)
+    float vol_tgt   = atr_ref * tgt_atr_mult
 
     // Stop sits beyond the nearest order block on the trade side, else the
     // last swing. v1 read array.get(ob_bot_arr, size-1) — the newest OB
@@ -660,19 +726,68 @@ if pend_entry and barOK
             if array.get(ob_type_arr, i) == -1 and not na(ob) and ob > px and (na(anchor) or ob < anchor)
                 anchor := ob
 
-    float swing = pend_is_buy ? last_swing_l : last_swing_h
-    float base  = na(anchor) ? swing : anchor
-    float stop  = na(base) ? (pend_is_buy ? px - atr_stop : px + atr_stop) : (pend_is_buy ? base - atr_stop : base + atr_stop)
-    float risk  = math.max(math.abs(px - stop), pip_size)
+    // Nearest level on the TP side; the target front-runs it by snr_buf.
+    float tp_level = na
+    if pend_is_buy
+        if not na(last_swing_h) and last_swing_h > px
+            tp_level := last_swing_h
+        if array.size(ob_top_arr) > 0
+            for i = array.size(ob_top_arr) - 1 to 0
+                float lv = array.get(ob_top_arr, i)
+                if array.get(ob_type_arr, i) == -1 and not na(lv) and lv > px and (na(tp_level) or lv < tp_level)
+                    tp_level := lv
+    else
+        if not na(last_swing_l) and last_swing_l < px
+            tp_level := last_swing_l
+        if array.size(ob_bot_arr) > 0
+            for i = array.size(ob_bot_arr) - 1 to 0
+                float lv = array.get(ob_bot_arr, i)
+                if array.get(ob_type_arr, i) == 1 and not na(lv) and lv < px and (na(tp_level) or lv > tp_level)
+                    tp_level := lv
 
+    float swing   = pend_is_buy ? last_swing_l : last_swing_h
+    float base    = na(anchor) ? swing : anchor
+    float base_sl = na(base) ? (pend_is_buy ? px - vol_stop : px + vol_stop) : (pend_is_buy ? base - vol_stop : base + vol_stop)
+    // Protected stop: the entry-side level itself, front-run outward. The
+    // tighter of base and protected wins, exactly as EzyMap takes max/min.
+    float prot = na
+    if pend_is_buy and not na(base) and base < px - snr_buf
+        prot := base + snr_buf
+    if not pend_is_buy and not na(base) and base > px + snr_buf
+        prot := base - snr_buf
+    float stop = na(prot) ? base_sl : (pend_is_buy ? math.max(base_sl, prot) : math.min(base_sl, prot))
+    float risk = math.max(math.max(math.abs(px - stop), vol_stop), tgt_min_d / maximum_rr)
+    risk := math.max(risk, pip_size)
+
+    float desired = f_clamp(math.max(vol_tgt, risk * 1.5), tgt_min_d, tgt_max_d)
+    desired := math.min(desired, risk * maximum_rr)
+    float avail = na(tp_level) ? desired : (pend_is_buy ? tp_level - snr_buf - px : px - snr_buf - tp_level)
+    float reward = math.min(desired, avail)
+    float tp_px = na
+    if avail > 0 and reward >= risk * minimum_rr
+        tp_px := pend_is_buy ? px + reward : px - reward
+    else
+        // Bounded ATR/risk fallback instead of dropping the touch: always
+        // yields a plan inside [tgt_min, tgt_max] and [minRR, maxRR].
+        float frisk   = math.max(vol_stop, tgt_min_d / maximum_rr)
+        float ffloor  = frisk * minimum_rr
+        float fceil   = math.max(ffloor, math.min(tgt_max_d, frisk * maximum_rr))
+        float freward = f_clamp(math.max(vol_tgt, tgt_min_d), ffloor, fceil)
+        stop  := pend_is_buy ? px - frisk : px + frisk
+        risk  := frisk
+        tp_px := pend_is_buy ? px + freward : px - freward
+
+    // TP1 takes the partial halfway to the planned target; the runner goes
+    // the full distance. tp1_close_pct == 0 keeps the single-exit meaning:
+    // both levels equal the full target.
+    float half_move = (tp_px - px) / 2.0
     t_setup   += 1
     t_dir      := pend_is_buy ? "BUY" : "SELL"
     t_kind     := pend_kind
     t_entry    := px
     t_sl       := stop
-    t_tp1      := pend_is_buy ? px + risk * 1.0 : px - risk * 1.0
-    t_tp2      := pend_is_buy ? px + risk * 2.0 : px - risk * 2.0
-    t_tp3      := pend_is_buy ? px + risk * 3.0 : px - risk * 3.0
+    t_tp1      := tp1_close_pct > 0 ? px + half_move : tp_px
+    t_tp3      := tp_px
     t_exit     := na
     t_start_bar := bar_index
     t_open     := 100
@@ -778,7 +893,6 @@ if r_expired and t_state != "ACTIVE"
     t_entry  := na
     t_sl     := na
     t_tp1    := na
-    t_tp2    := na
     t_tp3    := na
     t_exit   := na
     t_open   := 100
@@ -810,16 +924,16 @@ if show_dash and barstate.islast
     bias_col   = htf_bull ? col_buy : (htf_bear ? col_sell : col_dim)
     status_txt = t_state == "ACTIVE" ? "LIVE " + t_dir : (pend_entry ? "PENDING " + (pend_is_buy ? "BUY" : "SELL") : ((buy_signal or sell_signal) ? "SIGNAL " + entry_type_str : "WAIT"))
     status_col = t_state == "ACTIVE" ? (t_dir == "BUY" ? col_buy : col_sell) : (trade_busy ? col_warn : col_dim)
-    sess_txt   = in_london ? "LONDON" : (in_asia ? "ASIA" : "OFF-HOURS")
+    sess_txt   = in_london ? "LONDON" : (in_ny ? "NEW YORK" : (in_asia ? "ASIA" : "OFF-HOURS"))
 
     table.cell(dash, 0, 0, "MODE",    bgcolor=col_header, text_color=col_dim,  text_size=size.small)
-    table.cell(dash, 1, 0, syminfo.ticker + " " + timeframe.period, bgcolor=col_header, text_color=col_text, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 1, 0, trade_mode + " " + syminfo.ticker + " " + timeframe.period, bgcolor=col_header, text_color=col_text, text_size=size.small, text_halign=text.align_right)
     table.cell(dash, 0, 1, "BIAS",    text_color=col_dim,  text_size=size.small)
     table.cell(dash, 1, 1, bias_txt,  text_color=bias_col, text_size=size.small, text_halign=text.align_right)
     table.cell(dash, 0, 2, "STATUS",  text_color=col_dim,  text_size=size.small)
     table.cell(dash, 1, 2, status_txt, text_color=status_col, text_size=size.small, text_halign=text.align_right)
     table.cell(dash, 0, 3, "SESSION", text_color=col_dim,  text_size=size.small)
-    table.cell(dash, 1, 3, sess_txt,  text_color=(in_london or in_asia) ? col_text : col_dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 1, 3, sess_txt,  text_color=in_session ? col_text : col_dim, text_size=size.small, text_halign=text.align_right)
 
 if show_card and barstate.islast
     // The card shows the live trade while there is one, and the frozen result
@@ -832,7 +946,7 @@ if show_card and barstate.islast
         string c_title = showing_result ? r_status : "LIVE " + t_dir
         color  c_head  = showing_result ? (r_status == "TP HIT" ? col_buy : (r_status == "BE HIT" ? col_warn : col_sell)) : (t_dir == "BUY" ? col_buy : col_sell)
         float  c_entry = showing_result ? r_entry : t_entry
-        float  c_tp    = showing_result ? r_tp : t_tp1
+        float  c_tp    = showing_result ? r_tp : t_tp3
         float  c_sl    = showing_result ? r_sl : (use_trail_after_be and t_be_armed ? nz(t_trail, t_entry) : t_sl)
         float  c_pips  = showing_result ? r_pips : t_pips_live
         int    c_conf  = showing_result ? r_conf : conf_count
@@ -887,12 +1001,10 @@ if show_liq
 plotshape_buy = buy_signal
 plotshape_sell = sell_signal
 
-// TP ladder. P0: tp2 and tp3 were computed every signal and then never drawn,
-// alerted or shown anywhere — a 1R/2R/3R ladder with only the first rung
-// rendered. All three render now, off by default.
+// Mode targets. P6: the fixed 1R/2R/3R ladder is gone — TP1 is the partial
+// (halfway to plan) and TP the runner (full plan). TP2 had no other reader.
 plot(show_tps and not na(t_tp1) ? t_tp1 : na, "TP1", color=color.new(bull_col, 40), style=plot.style_linebr, linewidth=1)
-plot(show_tps and not na(t_tp2) ? t_tp2 : na, "TP2", color=color.new(bull_col, 60), style=plot.style_linebr, linewidth=1)
-plot(show_tps and not na(t_tp3) ? t_tp3 : na, "TP3", color=color.new(bull_col, 75), style=plot.style_linebr, linewidth=1)
+plot(show_tps and not na(t_tp3) ? t_tp3 : na, "TP", color=color.new(bull_col, 75), style=plot.style_linebr, linewidth=1)
 plot(show_tps and not na(t_sl) ? t_sl : na, "SL", color=color.new(bear_col, 25), style=plot.style_linebr, linewidth=2)
 
 // P2: markers moved from the signal bar to the bar the position actually
@@ -949,7 +1061,7 @@ var array<int>   marker_setups = array.new<int>()
 var array<label> marker_labels = array.new<label>()
 var label        live_badge    = na
 
-rr_txt = na(t_entry) or na(t_sl) or math.abs(t_entry - t_sl) <= 0 ? "-" : str.tostring(math.abs(t_tp1 - t_entry) / math.abs(t_entry - t_sl), "#.##") + "R"
+rr_txt = na(t_entry) or na(t_sl) or math.abs(t_entry - t_sl) <= 0 ? "-" : str.tostring(math.abs(t_tp3 - t_entry) / math.abs(t_entry - t_sl), "#.##") + "R"
 
 live_key = str.tostring(t_setup) + "|" + t_dir + "|LIVE"
 res_key  = str.tostring(t_setup) + "|" + r_status
@@ -962,8 +1074,8 @@ if enable_alerts and alert_live_tog and barstate.isrealtime and live_event and l
     live_msg = (t_dir == "BUY" ? "🟢 " : "🔴 ") + t_dir + " • TRADE LIVE\n\n" +
          syminfo.ticker + " • " + timeframe.period + " • " + t_kind + "\n\n" +
          "ENTRY : " + f_px(t_entry) + "\n" +
-         "TP1   : " + f_px(t_tp1) + "\n" +
-         "TP3   : " + f_px(t_tp3) + "\n" +
+         "TP (part): " + f_px(t_tp1) + "\n" +
+         "TP (fin) : " + f_px(t_tp3) + "\n" +
          "SL    : " + f_px(t_sl) + "\n" +
          "R:R   : " + rr_txt + "\n\n⚡️ POSITION ACTIVE\n\nSMC VWAP ENGINE"
     alert(live_msg, alert.freq_all)
