@@ -202,12 +202,16 @@ def check_duplicates(code_lines, err):
 
     Easy to introduce while threading a rename through a long script, and
     the linter is the only thing standing between that and a paste error.
+
+    Only `=` declares. `:=` reassigns an already-declared name (a bare
+    `x := 1` with no prior `x = ...` is itself a Pine compile error), so
+    reassignment is not tracked here.
     """
     typed = re.compile(
         r"^(?:const\s+|var\s+|varip\s+)?"
         r"(?:(?:array|matrix)<[^>]+>|[\w.]+(?:\[\])?)?\s+"
-        r"([A-Za-z_]\w*)\s*(?::=|=(?!=))\s*\S")
-    bare = re.compile(r"^([A-Za-z_]\w*)\s*(?::=|=(?!=))\s*\S")
+        r"([A-Za-z_]\w*)\s*=(?!=)\s*\S")
+    bare = re.compile(r"^([A-Za-z_]\w*)\s*=(?!=)\s*\S")
     skip_decl = re.compile(r"^(?:indicator|strategy|library)\s*\(")
     keywords = {"if", "else", "for", "while", "switch", "and", "or", "not", "to", "by", "from"}
     seen = {}
@@ -246,6 +250,7 @@ def selftest():
         ("//@version=6\nfor i = 0 to 3\n    label.new(bar_index, high)\n", "inside a loop", 1),
         ("//@version=6\nmin_conf = input.int(7)\nmin_conf = input.int(9)\n", "duplicate global", 1),
         ("//@version=6\nvar int a = 0\nif c\n    int a = 1\n    b := a\n", "duplicate global", 0),
+        ("//@version=6\nx = 1\nx := 2\n", "duplicate global", 0),
         ("//@version=6\nx = ta.sma(close, 20)\n", None, 0),
     ]
     failures = 0
