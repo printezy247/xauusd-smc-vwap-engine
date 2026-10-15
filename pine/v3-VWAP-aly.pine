@@ -14,6 +14,7 @@ grp_atr   = "ATR & Volatility"
 grp_sig   = "Signal Settings"
 grp_dash  = "Dashboard Settings"
 grp_trd   = "Trade Management"
+grp_alrt  = "Alerts"
 grp_vis   = "Visual Settings"
 
 // VWAP
@@ -63,6 +64,12 @@ be_trigger_pips   = input.float(25.0, "BE Trigger (M15 pips)", minval=1.0, maxva
 use_trail_after_be= input.bool(true, "Trail Stop After Break-Even", group=grp_trd)
 trail_atr_mult    = input.float(1.0, "Trail Distance (x ATR)", minval=0.2, maxval=3.0, step=0.1, group=grp_trd)
 result_secs       = input.int(30, "Result Visible Seconds", minval=5, maxval=3600, group=grp_trd)
+
+// Alerts
+enable_alerts  = input.bool(true, "Enable Alerts", group=grp_alrt)
+alert_live_tog = input.bool(true, "Alert Trade Entry (LIVE)", group=grp_alrt)
+alert_res_tog  = input.bool(true, "Alert TP / SL / BE", group=grp_alrt)
+alert_markers  = input.bool(true, "Alert-Synced Markers", group=grp_alrt)
 
 // Visuals
 bull_col          = input.color(color.new(color.teal, 0), "Bull Color", group=grp_vis)
@@ -645,28 +652,90 @@ if sl_event
 // =========================================================================
 // 13. ALERT ENGINE
 // =========================================================================
-// P0: bos_*/choch_*/liq_sweep_* are now barOK-gated internally, so the alert
-// conditions no longer add their own check. The old BOS/CHOCH/sweep alerts
-// never fired at all — they latched true on the first break of the session and
-// stayed that way, so each fired exactly once per script load.
-alertcondition(plotshape_buy, "BUY Signal", "XAUUSD BUY {{ticker}} | Type: Low/Med/High")
-alertcondition(plotshape_sell, "SELL Signal", "XAUUSD SELL {{ticker}} | Type: Low/Med/High")
+// P4. P0's conditions carried no payload and no dedupe, so a reconnect could
+// re-fire an event or swallow a second one that landed in the same chart bar.
+// Each event now carries an immutable key built from the setup id, so it
+// delivers exactly once without suppressing its neighbour, and the body is
+// assembled from the trade's own state instead of being typed into a title.
+//
+// P0 note, still true: bos_*/choch_*/liq_sweep_* are already barOK-gated, so
+// these conditions add no check of their own.
+alertcondition(plotshape_buy, "BUY Signal", "BUY {{ticker}} {{interval}} — " + entry_type_str)
+alertcondition(plotshape_sell, "SELL Signal", "SELL {{ticker}} {{interval}} — " + entry_type_str)
 alertcondition(bos_bull, "BOS Bullish", "BOS Bullish detected on {{ticker}}")
 alertcondition(choch_bull, "CHOCH Bullish", "CHOCH Bullish detected on {{ticker}}")
 alertcondition(bos_bear, "BOS Bearish", "BOS Bearish detected on {{ticker}}")
 alertcondition(choch_bear, "CHOCH Bearish", "CHOCH Bearish detected on {{ticker}}")
-alertcondition(liq_sweep_sell, "Liquidity Sweep Sell", "Sell-side Liquidity Swept on {{ticker}} (Bullish Reversal)")
-alertcondition(liq_sweep_buy, "Liquidity Sweep Buy", "Buy-side Liquidity Swept on {{ticker}} (Bearish Reversal)")
+alertcondition(liq_sweep_sell, "Liquidity Sweep Sell", "Sell-side Liquidity Sweep on {{ticker}} (Bullish Reversal)")
+alertcondition(liq_sweep_buy, "Liquidity Sweep Buy", "Buy-side Liquidity Sweep on {{ticker}} (Bearish Reversal)")
 // Reclaim is a cross, so the prior bar must be at-or-below, not strictly
-// below. Strict "<" silently skipped the exact-touch case. The bearish mirror
-// is new — the old set was bullish-only while every scoring rule is symmetric.
+// below. Strict "<" silently skipped the exact-touch case.
 alertcondition(barOK and close > vwap_val and close[1] <= vwap_val[1], "VWAP Reclaim Bullish", "Price reclaimed VWAP Bullish on {{ticker}}")
 alertcondition(barOK and close < vwap_val and close[1] >= vwap_val[1], "VWAP Reclaim Bearish", "Price lost VWAP Bearish on {{ticker}}")
 
-// P2: trade lifecycle alerts. P4 replaces these with dynamic alert() calls
-// carrying entry/TP/SL and a dedupe key; these exist so the lifecycle is
-// verifiable on TradingView before that lands.
-alertcondition(live_event, "Trade LIVE", "{{ticker}} {{interval}} " + t_dir + " " + t_kind + " opened at {{close}} | SL " + f_px(t_sl) + " | TP1 " + f_px(t_tp1))
-alertcondition(tp_event, "Take Profit", "{{ticker}} " + r_dir + " TP " + f_signed(r_pips))
-alertcondition(be_event, "Break-Even", "{{ticker}} " + r_dir + " BE " + f_signed(r_pips))
-alertcondition(sl_event, "Stop Loss", "{{ticker}} " + r_dir + " SL " + f_signed(r_pips))
+// Realtime-only lifecycle mirrors, for anyone wiring TradingView's native
+// alert dialog instead of the dynamic alert() calls below.
+alertcondition(live_event and barstate.isrealtime, "Trade LIVE", "LIVE {{ticker}} " + t_dir + " " + t_kind + " @ {{close}}")
+alertcondition(tp_event and barstate.isrealtime, "Take Profit", "TP {{ticker}} " + r_dir + " " + f_signed(r_pips))
+alertcondition(be_event and barstate.isrealtime, "Break-Even", "BE {{ticker}} " + r_dir + " " + f_signed(r_pips))
+alertcondition(sl_event and barstate.isrealtime, "Stop Loss", "SL {{ticker}} " + r_dir + " " + f_signed(r_pips))
+
+// -- dynamic alerts -------------------------------------------------------
+const int MAX_MARKERS = 33
+var string last_live_key = ""
+var string last_res_key  = ""
+var array<int>   marker_setups = array.new<int>()
+var array<label> marker_labels = array.new<label>()
+var label        live_badge    = na
+
+rr_txt = na(t_entry) or na(t_sl) or math.abs(t_entry - t_sl) <= 0 ? "-" : str.tostring(math.abs(t_tp1 - t_entry) / math.abs(t_entry - t_sl), "#.##") + "R"
+
+live_key = str.tostring(t_setup) + "|" + t_dir + "|LIVE"
+res_key  = str.tostring(t_setup) + "|" + r_status
+
+// Historical bars never touch the dedupe keys, so a fresh load cannot replay
+// a week of simulated trades into the alert stream, and a trade left ACTIVE at
+// the historical/realtime boundary is deliberately carried into realtime
+// rather than wiped — wiping it is how an alerted position vanished mid-trade.
+if enable_alerts and alert_live_tog and barstate.isrealtime and live_event and live_key != last_live_key
+    live_msg = (t_dir == "BUY" ? "🟢 " : "🔴 ") + t_dir + " • TRADE LIVE\n\n" +
+         syminfo.ticker + " • " + timeframe.period + " • " + t_kind + "\n\n" +
+         "ENTRY : " + f_px(t_entry) + "\n" +
+         "TP1   : " + f_px(t_tp1) + "\n" +
+         "TP3   : " + f_px(t_tp3) + "\n" +
+         "SL    : " + f_px(t_sl) + "\n" +
+         "R:R   : " + rr_txt + "\n\n⚡️ POSITION ACTIVE\n\nSMC VWAP ENGINE"
+    alert(live_msg, alert.freq_all)
+    last_live_key := live_key
+
+if enable_alerts and alert_res_tog and barstate.isrealtime and (tp_event or sl_event or be_event) and res_key != last_res_key
+    res_icon = tp_event ? "✅ COLLECT PROFIT" : (be_event ? "⚪ BREAK EVEN" : "❌ HIT RISK")
+    res_msg = res_icon + "\n\n" + syminfo.ticker + " • " + r_dir + " " + r_kind + "\n\n" +
+         "ENTRY : " + f_px(r_entry) + "\n" +
+         "EXIT  : " + f_px(r_exit) + "\n" +
+         "RESULT: " + f_signed(r_pips) + "\n\nSMC VWAP ENGINE"
+    alert(res_msg, alert.freq_all)
+    last_res_key := res_key
+
+// Permanent marks are committed from the EVENT, not from the alert call, so a
+// missed tick or disabled alerts still leaves the trade drawn on the chart.
+// Dedup is on setup id, so a reconnect cannot double-mark.
+if alert_markers and live_event and array.indexof(marker_setups, t_setup) == -1
+    label m = label.new(bar_index, t_dir == "BUY" ? low : high, t_dir + " LIVE",
+         style=t_dir == "BUY" ? label.style_label_up : label.style_label_down,
+         color=color.new(t_dir == "BUY" ? bull_col : bear_col, 25), textcolor=color.white,
+         size=size.tiny, tooltip="ALERT-SYNCED " + t_dir)
+    array.push(marker_setups, t_setup)
+    array.push(marker_labels, m)
+    while array.size(marker_setups) > MAX_MARKERS
+        array.shift(marker_setups)
+        label.delete(array.shift(marker_labels))
+
+// One transient badge for the open position, removed when it closes.
+if live_event and alert_markers and na(live_badge)
+    live_badge := label.new(bar_index, t_dir == "BUY" ? low : high, t_dir + " ACTIVE",
+         style=t_dir == "BUY" ? label.style_label_up : label.style_label_down,
+         color=color.new(t_dir == "BUY" ? bull_col : bear_col, 55), textcolor=color.white, size=size.tiny)
+else if t_state != "ACTIVE" and not na(live_badge)
+    label.delete(live_badge)
+    live_badge := na
