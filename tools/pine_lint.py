@@ -135,18 +135,23 @@ def check_objects_in_loop(code_lines, warn):
             depth -= 1
 
 
-def check_indent(raw_lines, err, warn):
-    cont = False
-    for i, line in enumerate(raw_lines):
-        lead = len(line) - len(line.lstrip(" "))
-        body = line.strip()
-        if "\t" in line[:lead]:
+def check_indent(raw_lines, code_lines, err, warn):
+    depth = 0
+    prev_cont = False
+    for i, (raw, code) in enumerate(zip(raw_lines, code_lines)):
+        lead = len(raw) - len(raw.lstrip(" "))
+        body = raw.strip()
+        if "\t" in raw[:lead]:
             err.append((i + 1, "tab in indentation (Pine requires spaces)"))
-        # Continuation lines of a wrapped expression inherit arbitrary
-        # alignment and are not block indentation.
+        # A line is a continuation, not a block body, when the line above it
+        # ended on an operator or left an expression open — wrapped `+` chains
+        # and multi-line calls both indent to the author's alignment.
+        cont = prev_cont or depth > 0
         if body and not cont and lead % 4 != 0:
             warn.append((i + 1, f"indent of {lead} spaces, not a multiple of 4"))
-        cont = body.endswith(("+", "\\"))
+        prev_cont = body.endswith(("+", "\\"))
+        depth += code.count("(") - code.count(")")
+        depth += code.count("[") - code.count("]")
 
 
 def check_alert_ticker(raw_lines, warn):
@@ -181,7 +186,7 @@ def lint_text(text):
     check_latches(code, warn)
     check_v6_blockers(code, warn)
     check_objects_in_loop(code, warn)
-    check_indent(raw, err, warn)
+    check_indent(raw, code, err, warn)
     check_alert_ticker(raw, warn)
     check_balance(code, err)
     return err, warn
