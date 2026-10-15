@@ -912,7 +912,7 @@ if r_expired and t_state != "ACTIVE"
 //
 // repaint order matters: clear both grids on every last bar, then fill. A
 // field that stops being populated would otherwise leave a ghost row.
-f_row(table t, int r, string k, string v, color vc, color bg = na, color kc = na, int align = text.align_right) =>
+f_row(table t, int r, string k, string v, color vc, color bg = na, color kc = na, string align = text.align_right) =>
     table.cell(t, 0, r, k, bgcolor=bg, text_color=na(kc) ? col_dim : kc, text_size=size.small)
     table.cell(t, 1, r, v, bgcolor=bg, text_color=vc, text_size=size.small, text_halign=align)
 
