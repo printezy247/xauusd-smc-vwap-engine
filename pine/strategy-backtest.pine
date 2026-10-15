@@ -210,9 +210,13 @@ var bool  leg_up   = false
 // v6: bool can never be na. false is dead until the first leg — every
 // reader is gated by leg_valid.
 
+// P1 needs ATR inside the structure section (displacement quality), so it is
+// computed here rather than down in the FVG engine where v1 had it. It must
+// sit above first use: Pine has no forward references.
 // P1: displacement quality. BOS is continuation and needs none of this, but a
 // CHOCH is the single most common and least selective trigger, so it has to
 // prove the move was a displacement rather than a drift through the level.
+atr_val = ta.atr(atr_len)
 atr_safe     = math.max(atr_val, syminfo.mintick)
 disp_range   = (high - low) / atr_safe
 disp_body    = math.abs(close - open) / math.max(high - low, syminfo.mintick)
@@ -231,9 +235,6 @@ disp_ok      = not use_disp_choch or (disp_range >= disp_min_range and disp_body
 // broke instead of the pivot that just printed. swing_h_dir/swing_l_dir == 0
 // means no prior swing exists, so neither BOS nor CHOCH can fire yet — the
 // first break of a series has no structure to break.
-// P1 needs ATR inside the structure section (displacement quality), so it is
-// computed here rather than down in the FVG engine where v1 had it.
-atr_val = ta.atr(atr_len)
 
 // P1: a sweep that also closes through the level is a structure break, not a
 // sweep. Counting both double-scored the same event 15 + 15.
@@ -351,7 +352,7 @@ if barOK and array.size(fvg_top_arr) > 0
         array.shift(fvg_bars_arr)
         array.shift(fvg_box_arr)
 
-    while array.size(fvg_top_arr) > fvg_max
+    while array.size(fvg_top_arr) > fvg_max_size
         box.delete(array.get(fvg_box_arr, 0))
         array.shift(fvg_top_arr)
         array.shift(fvg_bot_arr)
@@ -559,6 +560,10 @@ score_conf  = conf_bull ? 10 : (conf_bear ? -10 : 0)
 // P3/P5: how many independent things agree. P5 added seven more sources: a
 // live swing leg, round numbers, EMA regime, previous-day sweep and reclaim,
 // HTF level cluster, displacement, and a VWAP cross. Max is 15.
+// Signal flags are declared here, above first use — Pine has no forward
+// references.
+buy_signal = false
+sell_signal = false
 conf_bull_n = (score_vwap>0?1:0) + (score_htf>0?1:0) + (score_smc>0?1:0) + (score_liq>0?1:0) + (score_fvg>0?1:0) + (score_ob>0?1:0) + (score_fib>0?1:0) + (score_conf>0?1:0) +
      (leg_valid?1:0) + (brn_bull?1:0) + (regime_bull?1:0) + (pdsweep_bull?1:0) + (cluster_bull?1:0) + (disp_bull_src?1:0) + (vwap_reclaim_bull?1:0)
 conf_bear_n = (score_vwap<0?1:0) + (score_htf<0?1:0) + (score_smc<0?1:0) + (score_liq<0?1:0) + (score_fvg<0?1:0) + (score_ob<0?1:0) + (score_fib<0?1:0) + (score_conf<0?1:0) +
@@ -586,9 +591,6 @@ vol_ok = min_atr_ratio <= 0 or (not na(atr_baseline) and atr_baseline > 0 and at
 // the tier is a label on it.
 gate_bull = (bos_bull or choch_bull or conf_bull) and vwap_bull and conf_bull_n >= min_conf
 gate_bear = (bos_bear or choch_bear or conf_bear) and vwap_bear and conf_bear_n >= min_conf
-
-buy_signal = false
-sell_signal = false
 
 if barstate.isconfirmed and vol_ok and sess_ok and not is_cooldown
     if gate_bull

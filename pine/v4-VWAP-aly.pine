@@ -244,6 +244,11 @@ var bool  leg_up   = false
 // v6: bool can never be na. false is dead until the first leg — every
 // reader is gated by leg_valid.
 
+// P1 needs ATR inside the structure section (displacement quality), so it is
+// computed here rather than down in the FVG engine where v1 had it. It must
+// sit above first use: Pine has no forward references (v6 CE undeclared).
+atr_val = ta.atr(atr_len)
+
 // P1: displacement quality. BOS is continuation and needs none of this, but a
 // CHOCH is the single most common and least selective trigger, so it has to
 // prove the move was a displacement rather than a drift through the level.
@@ -265,9 +270,6 @@ disp_ok      = not use_disp_choch or (disp_range >= disp_min_range and disp_body
 // broke instead of the pivot that just printed. swing_h_dir/swing_l_dir == 0
 // means no prior swing exists, so neither BOS nor CHOCH can fire yet — the
 // first break of a series has no structure to break.
-// P1 needs ATR inside the structure section (displacement quality), so it is
-// computed here rather than down in the FVG engine where v1 had it.
-atr_val = ta.atr(atr_len)
 
 // P1: a sweep that also closes through the level is a structure break, not a
 // sweep. Counting both double-scored the same event 15 + 15.
@@ -385,7 +387,7 @@ if barOK and array.size(fvg_top_arr) > 0
         array.shift(fvg_bars_arr)
         array.shift(fvg_box_arr)
 
-    while array.size(fvg_top_arr) > fvg_max
+    while array.size(fvg_top_arr) > fvg_max_size
         box.delete(array.get(fvg_box_arr, 0))
         array.shift(fvg_top_arr)
         array.shift(fvg_bot_arr)
@@ -597,9 +599,8 @@ conf_bull_n = (score_vwap>0?1:0) + (score_htf>0?1:0) + (score_smc>0?1:0) + (scor
      (leg_valid?1:0) + (brn_bull?1:0) + (regime_bull?1:0) + (pdsweep_bull?1:0) + (cluster_bull?1:0) + (disp_bull_src?1:0) + (vwap_reclaim_bull?1:0)
 conf_bear_n = (score_vwap<0?1:0) + (score_htf<0?1:0) + (score_smc<0?1:0) + (score_liq<0?1:0) + (score_fvg<0?1:0) + (score_ob<0?1:0) + (score_fib<0?1:0) + (score_conf<0?1:0) +
      (leg_valid?1:0) + (brn_bear?1:0) + (regime_bear?1:0) + (pdsweep_bear?1:0) + (cluster_bear?1:0) + (disp_bear_src?1:0) + (vwap_reclaim_bear?1:0)
-conf_dir    = t_dir != "NONE" ? t_dir : (buy_signal ? "BUY" : (sell_signal ? "SELL" : (vwap_bull ? "BUY" : (vwap_bear ? "SELL" : "NONE"))))
-conf_count  = conf_dir == "BUY" ? conf_bull_n : conf_dir == "SELL" ? conf_bear_n : math.max(conf_bull_n, conf_bear_n)
-CONF_MAX    = 15
+ // conf_dir/count live in section 10, after t_dir and the signal flags they
+ // read — Pine has no forward references.
 
 bull_score = (score_vwap>0?score_vwap:0) + (score_htf>0?score_htf:0) + (score_smc>0?score_smc:0) + (score_liq>0?score_liq:0) + (score_fvg>0?score_fvg:0) + (score_ob>0?score_ob:0) + (score_fib>0?score_fib:0) + (score_conf>0?score_conf:0)
 bear_score = math.abs((score_vwap<0?score_vwap:0) + (score_htf<0?score_htf:0) + (score_smc<0?score_smc:0) + (score_liq<0?score_liq:0) + (score_fvg<0?score_fvg:0) + (score_ob<0?score_ob:0) + (score_fib<0?score_fib:0) + (score_conf<0?score_conf:0))
@@ -700,6 +701,12 @@ var int    r_setup   = -1
 var int    r_hide_at = na
 
 trade_busy = pend_entry or t_state == "ACTIVE"
+
+// P3/P5: how many independent things agree, and which side the card reports.
+// Lives here (not section 9) because it reads t_dir and the signal flags.
+conf_dir    = t_dir != "NONE" ? t_dir : (buy_signal ? "BUY" : (sell_signal ? "SELL" : (vwap_bull ? "BUY" : (vwap_bear ? "SELL" : "NONE"))))
+conf_count  = conf_dir == "BUY" ? conf_bull_n : conf_dir == "SELL" ? conf_bear_n : math.max(conf_bull_n, conf_bear_n)
+CONF_MAX    = 15
 
 // Arm on the signal bar, fill on the next one.
 if (buy_signal or sell_signal) and not trade_busy
