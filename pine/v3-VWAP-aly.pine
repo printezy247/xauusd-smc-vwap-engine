@@ -11,8 +11,10 @@ grp_fvg   = "FVG Settings"
 grp_ob    = "Order Block Settings"
 grp_fib   = "Fibonacci Settings"
 grp_atr   = "ATR & Volatility"
+grp_sess  = "Session"
 grp_sig   = "Signal Settings"
 grp_dash  = "Dashboard Settings"
+grp_theme = "Theme"
 grp_trd   = "Trade Management"
 grp_alrt  = "Alerts"
 grp_vis   = "Visual Settings"
@@ -55,7 +57,25 @@ min_score         = input.int(60, "Minimum Score (0-100)", group=grp_sig)
 cooldown_bars     = input.int(10, "Signal Cooldown Bars", group=grp_sig)
 
 // Dashboard
-show_dash         = input.bool(true, "Show Dashboard", group=grp_dash)
+show_dash         = input.bool(true, "Show Status Panel", group=grp_dash)
+show_card         = input.bool(true, "Show Trade Card", group=grp_dash)
+dash_pos          = input.string("Bottom Right", "Status Panel Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group=grp_dash)
+card_pos          = input.string("Top Right", "Trade Card Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group=grp_dash)
+
+// Theme
+col_buy    = input.color(color.rgb(0, 208, 142),   "Buy",     inline="t1", group=grp_theme)
+col_sell   = input.color(color.rgb(235, 72, 96),    "Sell",    inline="t1", group=grp_theme)
+col_panel  = input.color(color.rgb(7, 10, 14),      "Panel",   inline="t2", group=grp_theme)
+col_header = input.color(color.rgb(20, 26, 33),     "Header",  inline="t2", group=grp_theme)
+col_text   = input.color(color.rgb(239, 243, 247),  "Text",    inline="t3", group=grp_theme)
+col_dim    = input.color(color.rgb(150, 162, 175),  "Dim",     inline="t3", group=grp_theme)
+col_warn   = input.color(color.rgb(240, 158, 38),   "Warning", inline="t4", group=grp_theme)
+col_frame  = input.color(color.rgb(66, 75, 86),     "Frame",   inline="t4", group=grp_theme)
+
+// Session
+asia_sess       = input.session("0000-0800", "Asian Session", group=grp_sess)
+london_sess     = input.session("0800-1600", "London Session", group=grp_sess)
+ny_sess         = input.session("1300-2200", "New York Session", group=grp_sess)
 
 // Trade Management
 tp1_close_pct     = input.int(50, "Close % at TP1 (0 = single exit at TP1)", minval=0, maxval=100, step=5, group=grp_trd)
@@ -100,6 +120,8 @@ be_trigger = math.max(1.0, math.round(be_trigger_pips * math.sqrt(be_secs / 900.
 f_pips(bool is_buy, float entry, float px) => is_buy ? (px - entry) / pip_size : (entry - px) / pip_size
 f_px(float v) => na(v) ? "-" : str.tostring(v, format.mintick)
 f_signed(float v) => na(v) ? "-" : (v > 0 ? "+" : "") + str.tostring(v, "#.##") + " PIPS"
+f_pos(string s) => s == "Top Left" ? position.top_left : s == "Top Right" ? position.top_right : s == "Bottom Left" ? position.bottom_left : s == "Bottom Right" ? position.bottom_right : position.middle_right
+f_conf(int n) => n >= 6 ? "HIGH" : n >= 4 ? "MEDIUM" : n >= 2 ? "LOW" : "THIN"
 
 // =========================================================================
 // 2. VWAP ENGINE
@@ -292,6 +314,16 @@ htf_bull = h4_bias == 1 and h1_bias == 1
 htf_bear = h4_bias == -1 and h1_bias == -1
 
 // =========================================================================
+// 8.5 SESSION CLOCK
+// =========================================================================
+// P3 displays the session, P6 filters on it. One source of truth here so the
+// panel and the filter can never drift onto different session strings.
+in_asia   = not na(time(timeframe.period, asia_sess))
+in_london = not na(time(timeframe.period, london_sess))
+in_ny     = not na(time(timeframe.period, ny_sess))
+in_session = in_london or in_ny or in_asia
+
+// =========================================================================
 // 9. ENTRY ENGINE & SCORING
 // =========================================================================
 // Confirmation Candle
@@ -311,6 +343,13 @@ score_fvg   = in_bull_fvg ? 10 : (in_bear_fvg ? -10 : 0)
 score_ob    = in_bull_ob ? 10 : (in_bear_ob ? -10 : 0)
 score_fib   = in_optimal_buy ? 10 : (in_optimal_sell ? -10 : 0)
 score_conf  = conf_bull ? 10 : (conf_bear ? -10 : 0)
+
+// P3/P5: how many independent things agree, rather than a weighted sum with
+// no way to see which parts fired. P5 adds further sources to both counts.
+conf_bull_n = (score_vwap>0?1:0) + (score_htf>0?1:0) + (score_smc>0?1:0) + (score_liq>0?1:0) + (score_fvg>0?1:0) + (score_ob>0?1:0) + (score_fib>0?1:0) + (score_conf>0?1:0)
+conf_bear_n = (score_vwap<0?1:0) + (score_htf<0?1:0) + (score_smc<0?1:0) + (score_liq<0?1:0) + (score_fvg<0?1:0) + (score_ob<0?1:0) + (score_fib<0?1:0) + (score_conf<0?1:0)
+conf_dir    = t_dir != "NONE" ? t_dir : (buy_signal ? "BUY" : (sell_signal ? "SELL" : (vwap_bull ? "BUY" : (vwap_bear ? "SELL" : "NONE"))))
+conf_count  = conf_dir == "BUY" ? conf_bull_n : conf_dir == "SELL" ? conf_bear_n : math.max(conf_bull_n, conf_bear_n)
 
 bull_score = (score_vwap>0?score_vwap:0) + (score_htf>0?score_htf:0) + (score_smc>0?score_smc:0) + (score_liq>0?score_liq:0) + (score_fvg>0?score_fvg:0) + (score_ob>0?score_ob:0) + (score_fib>0?score_fib:0) + (score_conf>0?score_conf:0)
 bear_score = math.abs((score_vwap<0?score_vwap:0) + (score_htf<0?score_htf:0) + (score_smc<0?score_smc:0) + (score_liq<0?score_liq:0) + (score_fvg<0?score_fvg:0) + (score_ob<0?score_ob:0) + (score_fib<0?score_fib:0) + (score_conf<0?score_conf:0))
@@ -407,6 +446,8 @@ var float  r_tp      = na
 var float  r_exit    = na
 var float  r_pips    = na
 var bool   r_be      = false
+var int    r_conf    = 0
+var string r_reason  = ""
 var int    r_setup   = -1
 var int    r_hide_at = na
 
@@ -528,6 +569,14 @@ if t_state == "ACTIVE" and barOK and not na(t_start_bar) and bar_index > t_start
         r_exit    := t_exit
         r_pips    := t_realised
         r_be      := t_be_armed
+        // Which evidence actually fired, as words. The weighted score says how
+        // much; this says what.
+        r_reason  := (smc_state != "FLAT" ? smc_state + " " : "") +
+                     (score_vwap != 0 ? "VWAP " : "") + (score_htf != 0 ? "HTF " : "") +
+                     (score_liq != 0 ? "SWEEP " : "") + (score_fvg != 0 ? "FVG " : "") +
+                     (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : "PREMIUM ") : "") +
+                     (score_conf != 0 ? "CONF " : "") + (t_be_armed ? "BE " : "")
+        r_conf    := conf_count
         r_hide_at := (barstate.islast ? timenow : time_close) + result_secs * 1000
 
 // Blended P/L: partials already banked, plus a mark on whatever is still open.
@@ -557,39 +606,72 @@ if r_expired and t_state != "ACTIVE"
     t_trail  := na
 
 // =========================================================================
-// 11. DASHBOARD ENGINE
+// 11. DASHBOARD: STATUS PANEL + TRADE CARD
 // =========================================================================
-var table dash = table.new(position.top_right, 2, 1, bgcolor=color.new(color.black, 80), border_width=1)
+// P3. v1 packed every field into one newline-joined string inside a 2x1 table,
+// so no field could be coloured independently and the panel read as a single
+// blob. Split into a compact status panel and a trade card, both repainted
+// per-cell with colour driven by state, plus a result card that outlives the
+// trade it describes.
+//
+// repaint order matters: clear both grids on every last bar, then fill. A
+// field that stops being populated would otherwise leave a ghost row.
+var table dash = table.new(f_pos(dash_pos), 2, 4, bgcolor=col_panel, frame_color=col_frame, frame_width=1, border_color=color.new(col_frame, 60), border_width=1)
+var table card = table.new(f_pos(card_pos), 2, 8, bgcolor=col_panel, frame_color=col_frame, frame_width=1, border_color=color.new(col_frame, 60), border_width=1)
+
+if barstate.islast
+    table.clear(dash, 0, 0, 1, 3)
+    table.clear(card, 0, 0, 1, 7)
 
 if show_dash and barstate.islast
-    bias_str = vwap_bull ? "BULLISH" : (vwap_bear ? "BEARISH" : "NEUTRAL")
-    smc_str  = smc_state
-    liq_str  = liq_sweep_sell ? "SWEPT SELL" : (liq_sweep_buy ? "SWEPT BUY" : "NONE")
-    fvg_str  = in_bull_fvg ? "BULL" : (in_bear_fvg ? "BEAR" : "NONE")
-    ob_str   = in_bull_ob ? "BULL" : (in_bear_ob ? "BEAR" : "NONE")
-    fib_str  = in_discount ? "DISCOUNT" : (in_premium ? "PREMIUM" : "NEUTRAL")
-    score_str = buy_signal ? str.tostring(bull_score) : (sell_signal ? str.tostring(bear_score) : "0")
-    
-    cell_str = "XAUUSD SMC VWAP\n" + 
-               "BIAS      : " + bias_str + "\n" + 
-               "H4        : " + (h4_bias==1?"BULL":(h4_bias==-1?"BEAR":"NEUT")) + "\n" +
-               "H1        : " + (h1_bias==1?"BULL":(h1_bias==-1?"BEAR":"NEUT")) + "\n" +
-               "M15       : " + (m15_bias==1?"BULL":(m15_bias==-1?"BEAR":"NEUT")) + "\n" +
-               "SMC       : " + smc_str + "\n" +
-               "LIQUIDITY : " + liq_str + "\n" +
-               "FVG       : " + fvg_str + "\n" +
-               "OB        : " + ob_str + "\n" +
-               "FIB       : " + fib_str + "\n" +
-               "SCORE     : " + score_str + "/100\n" +
-               "ENTRY     : " + (buy_signal or sell_signal ? entry_type_str : (t_dir == "NONE" ? "NO TRADE" : t_dir + " " + t_kind)) + "\n" +
-               "STATE     : " + (trade_busy ? t_state : "IDLE") + "\n" +
-               "P/L       : " + (t_state == "ACTIVE" ? f_signed(t_pips_live) : (r_live ? f_signed(r_pips) : "-")) + "\n" +
-               "BE        : " + (t_be_armed ? "ARMED" : "-") + "\n" +
-               "SL        : " + f_px(t_sl) + "\n" +
-               "TP1       : " + f_px(t_tp1) + "\n" +
-               "TP3       : " + f_px(t_tp3)
-    
-    table.cell(dash, 0, 0, cell_str, text_color=color.white, text_size=size.small)
+    bias_txt   = htf_bull ? "BULL" : (htf_bear ? "BEAR" : "NEUTRAL")
+    bias_col   = htf_bull ? col_buy : (htf_bear ? col_sell : col_dim)
+    status_txt = t_state == "ACTIVE" ? "LIVE " + t_dir : (pend_entry ? "PENDING " + (pend_is_buy ? "BUY" : "SELL") : ((buy_signal or sell_signal) ? "SIGNAL " + entry_type_str : "WAIT"))
+    status_col = t_state == "ACTIVE" ? (t_dir == "BUY" ? col_buy : col_sell) : (trade_busy ? col_warn : col_dim)
+    sess_txt   = in_london ? "LONDON" : (in_asia ? "ASIA" : "OFF-HOURS")
+
+    table.cell(dash, 0, 0, "MODE",    bgcolor=col_header, text_color=col_dim,  text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " " + timeframe.period, bgcolor=col_header, text_color=col_text, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 1, "BIAS",    text_color=col_dim,  text_size=size.small)
+    table.cell(dash, 1, 1, bias_txt,  text_color=bias_col, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 2, "STATUS",  text_color=col_dim,  text_size=size.small)
+    table.cell(dash, 1, 2, status_txt, text_color=status_col, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 3, "SESSION", text_color=col_dim,  text_size=size.small)
+    table.cell(dash, 1, 3, sess_txt,  text_color=(in_london or in_asia) ? col_text : col_dim, text_size=size.small, text_halign=text.align_right)
+
+if show_card and barstate.islast
+    // The card shows the live trade while there is one, and the frozen result
+    // for result_secs afterwards, so a phone notification followed by a look
+    // back at the chart still lands on the outcome.
+    bool showing_result = t_state != "ACTIVE" and r_live
+    if t_state == "ACTIVE" or r_live
+        string c_dir   = showing_result ? r_dir : t_dir
+        string c_kind  = showing_result ? r_kind : t_kind
+        string c_title = showing_result ? r_status : "LIVE " + t_dir
+        color  c_head  = showing_result ? (r_status == "TP HIT" ? col_buy : (r_status == "BE HIT" ? col_warn : col_sell)) : (t_dir == "BUY" ? col_buy : col_sell)
+        float  c_entry = showing_result ? r_entry : t_entry
+        float  c_tp    = showing_result ? r_tp : t_tp1
+        float  c_sl    = showing_result ? r_sl : (use_trail_after_be and t_be_armed ? nz(t_trail, t_entry) : t_sl)
+        float  c_pips  = showing_result ? r_pips : t_pips_live
+        int    c_conf  = showing_result ? r_conf : conf_count
+        string c_score = showing_result ? "-" : str.tostring(t_dir == "SELL" ? bear_score : bull_score, "#") + "/100"
+        string c_why   = (showing_result ? r_reason : (smc_state + " " + (score_vwap != 0 ? "VWAP " : "") + (score_htf != 0 ? "HTF " : "") + (score_liq != 0 ? "SWEEP " : "") + (score_fvg != 0 ? "FVG " : "") + (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : "PREMIUM ") : "") + (score_conf != 0 ? "CONF " : "") + (t_be_armed ? "BE " : ""))) + "\nOPEN " + str.tostring(t_open) + "%"
+
+        table.cell(card, 0, 0, c_title, bgcolor=c_head, text_color=col_text, text_size=size.small)
+        table.cell(card, 0, 1, "MODE",       text_color=col_dim,  text_size=size.small)
+        table.cell(card, 1, 1, c_kind + " • " + c_score, text_color=col_text, text_size=size.small, text_halign=text.align_right)
+        table.cell(card, 0, 2, "CONFIDENCE", text_color=col_dim,  text_size=size.small)
+        table.cell(card, 1, 2, f_conf(c_conf) + " (" + str.tostring(c_conf) + ")", text_color=c_conf >= 4 ? col_buy : (c_conf >= 2 ? col_text : col_warn), text_size=size.small, text_halign=text.align_right)
+        table.cell(card, 0, 3, "ENTRY", text_color=col_dim,  text_size=size.small)
+        table.cell(card, 1, 3, f_px(c_entry), text_color=col_text, text_size=size.small, text_halign=text.align_right)
+        table.cell(card, 0, 4, "TP", text_color=col_dim,  text_size=size.small)
+        table.cell(card, 1, 4, f_px(c_tp), text_color=col_buy, text_size=size.small, text_halign=text.align_right)
+        table.cell(card, 0, 5, "SL", text_color=col_dim,  text_size=size.small)
+        table.cell(card, 1, 5, f_px(c_sl), text_color=col_sell, text_size=size.small, text_halign=text.align_right)
+        table.cell(card, 0, 6, "P/L", text_color=col_dim,  text_size=size.small)
+        table.cell(card, 1, 6, f_signed(c_pips), text_color=na(c_pips) ? col_dim : (c_pips >= 0 ? col_buy : col_sell), text_size=size.small, text_halign=text.align_right)
+        table.cell(card, 0, 7, "WHY THIS TRADE", text_color=col_dim, text_size=size.small)
+        table.cell(card, 1, 7, c_why, text_color=col_text, text_size=size.small, text_halign=text.align_left)
 
 // =========================================================================
 // 12. VISUALIZATION ENGINE
