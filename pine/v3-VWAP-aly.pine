@@ -28,6 +28,10 @@ vwap_mult         = input.float(1.5, "VWAP Band Multiplier", group=grp_vwap)
 // SMC
 swing_len         = input.int(5, "Swing Sensitivity", minval=1, group=grp_smc)
 show_struct       = input.bool(true, "Show Structure (BOS/CHOCH)", group=grp_smc)
+use_disp_choch    = input.bool(true, "Displacement-Quality CHOCH", group=grp_smc)
+disp_min_range    = input.float(0.70, "Min Range / ATR", minval=0.0, maxval=2.0, step=0.05, group=grp_smc)
+disp_min_body     = input.float(0.55, "Min Body %", minval=0.0, maxval=0.9, step=0.05, group=grp_smc)
+disp_min_break    = input.float(0.10, "Min Break / ATR", minval=0.0, maxval=0.5, step=0.05, group=grp_smc)
 
 // Liquidity
 show_liq          = input.bool(true, "Show Liquidity Sweeps", group=grp_liq)
@@ -36,15 +40,16 @@ show_liq          = input.bool(true, "Show Liquidity Sweeps", group=grp_liq)
 show_fvg          = input.bool(true, "Show FVG", group=grp_fvg)
 fvg_min_size      = input.float(0.5, "FVG Min Size (ATR Mult)", group=grp_fvg)
 fvg_mitigated_del = input.bool(true, "Delete Mitigated FVG", group=grp_fvg)
+fvg_max_size      = input.int(12, "Max Tracked FVGs", minval=1, maxval=40, group=grp_fvg)
+fvg_max_age       = input.int(300, "FVG Max Age (bars)", minval=10, group=grp_fvg)
 
 // OB
 show_ob           = input.bool(true, "Show Order Blocks", group=grp_ob)
 ob_max_count      = input.int(5, "Max Active OBs", group=grp_ob)
+ob_max_age        = input.int(200, "OB Max Age (bars)", minval=10, group=grp_ob)
 
 // Fib
-// P0: the "Show Fibonacci" toggle controlled nothing — no fib level was ever
-// plotted. Drawing them needs a real swing leg (P1.7), which this script does
-// not track yet, so the dead toggle is gone rather than left to mislead.
+show_fib_levels   = input.bool(false, "Show Fibonacci 50 / 61.8", group=grp_fib)
 
 // ATR
 atr_len           = input.int(14, "ATR Length", group=grp_atr)
@@ -157,6 +162,23 @@ var float last_swing_l = na
 var int swing_h_dir = 0 // 1 = HH, -1 = LH, 0 = no prior leg yet
 var int swing_l_dir = 0 // 1 = HL, -1 = LL, 0 = no prior leg yet
 
+// P1: last completed swing leg. leg_up is the leg's own direction, which also
+// fixes v1's fib where discount and premium were inverted on bearish legs.
+var float leg_high = na
+var float leg_low  = na
+var bool  leg_up   = na
+
+// P1: displacement quality. BOS is continuation and needs none of this, but a
+// CHOCH is the single most common and least selective trigger, so it has to
+// prove the move was a displacement rather than a drift through the level.
+atr_safe     = math.max(atr_val, syminfo.mintick)
+disp_range   = (high - low) / atr_safe
+disp_body    = math.abs(close - open) / math.max(high - low, syminfo.mintick)
+bull_break_a = na(last_swing_h) ? na : (close - last_swing_h) / atr_safe
+bear_break_a = na(last_swing_l) ? na : (last_swing_l - close) / atr_safe
+disp_ok      = not use_disp_choch or (disp_range >= disp_min_range and disp_body >= disp_min_body and
+              (na(bull_break_a) or bull_break_a >= disp_min_break) and (na(bear_break_a) or bear_break_a >= disp_min_break))
+
 // P0 B1/B2/B3/B11: breaks are momentary series bools, not latched `var` bools.
 // Latched flags stayed true for the rest of the session, which made every
 // later "BOS" a re-firing of the first one, drew a label on every bar, and
@@ -167,17 +189,38 @@ var int swing_l_dir = 0 // 1 = HL, -1 = LL, 0 = no prior leg yet
 // broke instead of the pivot that just printed. swing_h_dir/swing_l_dir == 0
 // means no prior swing exists, so neither BOS nor CHOCH can fire yet — the
 // first break of a series has no structure to break.
+// P1 needs ATR inside the structure section (displacement quality), so it is
+// computed here rather than down in the FVG engine where v1 had it.
+atr_val = ta.atr(atr_len)
+
+// P1: a sweep that also closes through the level is a structure break, not a
+// sweep. Counting both double-scored the same event 15 + 15.
 bos_bull     = barOK and not na(last_swing_h) and close > last_swing_h and swing_h_dir == 1
-choch_bull   = barOK and not na(last_swing_h) and close > last_swing_h and swing_h_dir == -1
+choch_bull   = barOK and not na(last_swing_h) and close > last_swing_h and swing_h_dir == -1 and disp_ok
 bos_bear     = barOK and not na(last_swing_l) and close < last_swing_l and swing_l_dir == -1
-choch_bear   = barOK and not na(last_swing_l) and close < last_swing_l and swing_l_dir == 1
+choch_bear   = barOK and not na(last_swing_l) and close < last_swing_l and swing_l_dir == 1 and disp_ok
+
+// P1: a leg is the high/low pair of the last completed swing. v1 built fib from
+// last_swing_l and last_swing_h whatever order they happened to print in, which
+// put the levels on a range that was never a swing. Snapshots are taken before
+// the pivot blocks so the leg closes against the level it actually broke.
+prev_h = last_swing_h
+prev_l = last_swing_l
 
 if not na(ph)
-    swing_h_dir := na(last_swing_h) ? 0 : (ph > last_swing_h ? 1 : -1)
+    if not na(prev_l) and ph > prev_l
+        leg_high := ph
+        leg_low  := prev_l
+        leg_up   := true
+    swing_h_dir := na(prev_h) ? 0 : (ph > prev_h ? 1 : -1)
     last_swing_h := ph
 
 if not na(pl)
-    swing_l_dir := na(last_swing_l) ? 0 : (pl < last_swing_l ? -1 : 1)
+    if not na(prev_h) and pl < prev_h
+        leg_high := prev_h
+        leg_low  := pl
+        leg_up   := false
+    swing_l_dir := na(prev_l) ? 0 : (pl < prev_l ? -1 : 1)
     last_swing_l := pl
 
 // P0 B4: the break bools above are true for a single bar, so the panel needs
@@ -200,44 +243,77 @@ else if choch_bear
 // computed and never referenced, and the tolerance was compared against raw
 // price rather than ticks. Both deleted rather than renamed — deleting the
 // consumers makes the input dead too.
-liq_sweep_sell = barOK and not na(last_swing_l) and low < last_swing_l and close > last_swing_l // Sell-side sweep (grab sell liq, then reverse up)
-liq_sweep_buy  = barOK and not na(last_swing_h) and high > last_swing_h and close < last_swing_h // Buy-side sweep (grab buy liq, then reverse down)
+liq_sweep_sell = barOK and not na(last_swing_l) and low < last_swing_l and close > last_swing_l and not (bos_bull or choch_bull) // Sell-side sweep (grab sell liq, then reverse up)
+liq_sweep_buy  = barOK and not na(last_swing_h) and high > last_swing_h and close < last_swing_h and not (bos_bear or choch_bear) // Buy-side sweep (grab buy liq, then reverse down)
 
 // =========================================================================
 // 5. FVG ENGINE
 // =========================================================================
+// P1: the record and its box are created together and destroyed together. v1
+// kept box drawing as a separate re-evaluated condition in the visualisation
+// section, so a mitigated gap stayed on the chart while the array said it was
+// gone. Both are hard-capped and age-limited now — v1 never removed an
+// unmitigated gap, so the arrays grew without bound across a long history.
 var array<float> fvg_top_arr = array.new_float()
 var array<float> fvg_bot_arr = array.new_float()
 var array<int>   fvg_type_arr = array.new_int() // 1 = Bull, -1 = Bear
+var array<int>   fvg_bars_arr = array.new_int()
+var array<box>   fvg_box_arr  = array.new_box()
 
 bull_fvg_cond = low > high[2] and close[1] > high[2]
 bear_fvg_cond = high < low[2] and close[1] < low[2]
-atr_val = ta.atr(atr_len)
 
 // P0: barOK stops realtime ticks from pushing the same gap in twice.
 if barOK and bull_fvg_cond and (low - high[2]) > atr_val * fvg_min_size
     array.push(fvg_top_arr, low)
     array.push(fvg_bot_arr, high[2])
     array.push(fvg_type_arr, 1)
+    array.push(fvg_bars_arr, bar_index)
+    array.push(fvg_box_arr, show_fvg ? box.new(bar_index-2, low, bar_index, high[2], bgcolor=color.new(bull_col, 85), border_color=color.new(bull_col, 50)) : na)
 
 if barOK and bear_fvg_cond and (low[2] - high) > atr_val * fvg_min_size
     array.push(fvg_top_arr, low[2])
     array.push(fvg_bot_arr, high)
     array.push(fvg_type_arr, -1)
+    array.push(fvg_bars_arr, bar_index)
+    array.push(fvg_box_arr, show_fvg ? box.new(bar_index-2, low[2], bar_index, high, bgcolor=color.new(bear_col, 85), border_color=color.new(bear_col, 50)) : na)
 
-// Mitigate FVGs
+// Mitigate, then expire by age, then trim to the cap — all oldest first, so
+// the newest structure is never the thing that gets evicted.
 if barOK and array.size(fvg_top_arr) > 0
     for i = array.size(fvg_top_arr) - 1 to 0
         if array.get(fvg_type_arr, i) == 1 and close < array.get(fvg_bot_arr, i)
             if fvg_mitigated_del
+                box.delete(array.get(fvg_box_arr, i))
                 array.remove(fvg_top_arr, i)
                 array.remove(fvg_bot_arr, i)
                 array.remove(fvg_type_arr, i)
+                array.remove(fvg_bars_arr, i)
+                array.remove(fvg_box_arr, i)
         else if array.get(fvg_type_arr, i) == -1 and close > array.get(fvg_top_arr, i)
             if fvg_mitigated_del
+                box.delete(array.get(fvg_box_arr, i))
                 array.remove(fvg_top_arr, i)
                 array.remove(fvg_bot_arr, i)
                 array.remove(fvg_type_arr, i)
+                array.remove(fvg_bars_arr, i)
+                array.remove(fvg_box_arr, i)
+
+    while array.size(fvg_top_arr) > 0 and bar_index - array.get(fvg_bars_arr, 0) > fvg_max_age
+        box.delete(array.get(fvg_box_arr, 0))
+        array.shift(fvg_top_arr)
+        array.shift(fvg_bot_arr)
+        array.shift(fvg_type_arr)
+        array.shift(fvg_bars_arr)
+        array.shift(fvg_box_arr)
+
+    while array.size(fvg_top_arr) > fvg_max
+        box.delete(array.get(fvg_box_arr, 0))
+        array.shift(fvg_top_arr)
+        array.shift(fvg_bot_arr)
+        array.shift(fvg_type_arr)
+        array.shift(fvg_bars_arr)
+        array.shift(fvg_box_arr)
 
 in_bull_fvg = false
 in_bear_fvg = false
@@ -251,25 +327,63 @@ if array.size(fvg_top_arr) > 0
 // =========================================================================
 // 6. ORDER BLOCK ENGINE
 // =========================================================================
+// P1: v1 never removed anything from these arrays and gated new pushes on
+// array.size < ob_max_count * 2, so once ten blocks had ever printed the gate
+// closed for the rest of the chart history and no new order block could ever
+// be recorded again. The stop engine then anchored to whatever was newest,
+// which was usually nowhere near the entry. Now: mitigate, expire by age,
+// trim oldest to the cap, then push — so the gate can never latch shut.
 var array<float> ob_top_arr = array.new_float()
 var array<float> ob_bot_arr = array.new_float()
 var array<int>   ob_type_arr = array.new_int()
+var array<int>   ob_bars_arr = array.new_int()
+var array<box>   ob_box_arr  = array.new_box()
 
 disp_bull = close > high[1] and (close - open) > atr_val * 1.5
 disp_bear = close < low[1] and (open - close) > atr_val * 1.5
 
+// Mitigate: a block is dead once price has closed cleanly through it.
+if barOK and array.size(ob_top_arr) > 0
+    for i = array.size(ob_top_arr) - 1 to 0
+        bool ob_dead = array.get(ob_type_arr, i) == 1 ? close < array.get(ob_bot_arr, i) : close > array.get(ob_top_arr, i)
+        if ob_dead
+            box.delete(array.get(ob_box_arr, i))
+            array.remove(ob_top_arr, i)
+            array.remove(ob_bot_arr, i)
+            array.remove(ob_type_arr, i)
+            array.remove(ob_bars_arr, i)
+            array.remove(ob_box_arr, i)
+
+    while array.size(ob_top_arr) > 0 and bar_index - array.get(ob_bars_arr, 0) > ob_max_age
+        box.delete(array.get(ob_box_arr, 0))
+        array.shift(ob_top_arr)
+        array.shift(ob_bot_arr)
+        array.shift(ob_type_arr)
+        array.shift(ob_bars_arr)
+        array.shift(ob_box_arr)
+
+    while array.size(ob_top_arr) > ob_max_count
+        box.delete(array.get(ob_box_arr, 0))
+        array.shift(ob_top_arr)
+        array.shift(ob_bot_arr)
+        array.shift(ob_type_arr)
+        array.shift(ob_bars_arr)
+        array.shift(ob_box_arr)
+
 // P0: barOK, same reason as the FVG arrays above.
 if barOK and disp_bull and close[1] < open[1]
-    if array.size(ob_top_arr) < ob_max_count * 2
-        array.push(ob_top_arr, high[1])
-        array.push(ob_bot_arr, low[1])
-        array.push(ob_type_arr, 1)
+    array.push(ob_top_arr, high[1])
+    array.push(ob_bot_arr, low[1])
+    array.push(ob_type_arr, 1)
+    array.push(ob_bars_arr, bar_index)
+    array.push(ob_box_arr, show_ob ? box.new(bar_index-1, low[1], bar_index, high[1], bgcolor=color.new(bull_col, 88), border_color=color.new(bull_col, 60)) : na)
 
 if barOK and disp_bear and close[1] > open[1]
-    if array.size(ob_top_arr) < ob_max_count * 2
-        array.push(ob_top_arr, high[1])
-        array.push(ob_bot_arr, low[1])
-        array.push(ob_type_arr, -1)
+    array.push(ob_top_arr, high[1])
+    array.push(ob_bot_arr, low[1])
+    array.push(ob_type_arr, -1)
+    array.push(ob_bars_arr, bar_index)
+    array.push(ob_box_arr, show_ob ? box.new(bar_index-1, low[1], bar_index, high[1], bgcolor=color.new(bear_col, 88), border_color=color.new(bear_col, 60)) : na)
 
 in_bull_ob = false
 in_bear_ob = false
@@ -283,16 +397,23 @@ if array.size(ob_top_arr) > 0
 // =========================================================================
 // 7. FIBONACCI ENGINE
 // =========================================================================
-fib_0 = last_swing_l
-fib_100 = last_swing_h
-is_bull_fib = fib_100 > fib_0
-fib_50 = is_bull_fib ? (fib_100 - fib_0) * 0.5 + fib_0 : fib_0 - (fib_0 - fib_100) * 0.5
-fib_618 = is_bull_fib ? (fib_100 - fib_0) * 0.618 + fib_0 : fib_0 - (fib_0 - fib_100) * 0.618
+// P1: measured on the tracked leg rather than on two pivots that printed at
+// unrelated times, and a leg too small to be a leg is rejected outright rather
+// than producing levels out of noise. v1 compared price against a bare
+// midpoint, which inverted both the discount and premium labels whenever the
+// leg happened to be bearish.
+leg_valid = not na(leg_high) and not na(leg_low) and math.abs(leg_high - leg_low) > atr_val * 0.5
+is_bull_fib = leg_valid and leg_up
+fib_50   = leg_valid ? leg_low + (leg_high - leg_low) * 0.500 : na
+fib_618  = leg_valid ? leg_low + (leg_high - leg_low) * 0.618 : na
 
-in_discount = close < fib_50
-in_premium = close > fib_50
-in_optimal_buy = is_bull_fib and close <= fib_618 and close >= fib_50
-in_optimal_sell = not is_bull_fib and close >= fib_618 and close <= fib_50
+in_discount    = leg_valid and (is_bull_fib ? close < fib_50 : close > fib_50)
+in_premium     = leg_valid and (is_bull_fib ? close > fib_50 : close < fib_50)
+in_optimal_buy = leg_valid and is_bull_fib and close <= fib_618 and close >= fib_50
+in_optimal_sell = leg_valid and not is_bull_fib and close >= fib_618 and close <= fib_50
+
+plot(show_fib_levels and leg_valid ? fib_50 : na, "Fib 50", color=color.new(color.gray, 30), style=plot.style_linebr)
+plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(color.silver, 40), style=plot.style_linebr)
 
 // =========================================================================
 // 8. MULTI-TIMEFRAME ENGINE
@@ -574,7 +695,7 @@ if t_state == "ACTIVE" and barOK and not na(t_start_bar) and bar_index > t_start
         r_reason  := (smc_state != "FLAT" ? smc_state + " " : "") +
                      (score_vwap != 0 ? "VWAP " : "") + (score_htf != 0 ? "HTF " : "") +
                      (score_liq != 0 ? "SWEEP " : "") + (score_fvg != 0 ? "FVG " : "") +
-                     (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : "PREMIUM ") : "") +
+                     (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : (in_premium ? "PREMIUM " : "")) : "") +
                      (score_conf != 0 ? "CONF " : "") + (t_be_armed ? "BE " : "")
         r_conf    := conf_count
         r_hide_at := (barstate.islast ? timenow : time_close) + result_secs * 1000
@@ -655,7 +776,7 @@ if show_card and barstate.islast
         float  c_pips  = showing_result ? r_pips : t_pips_live
         int    c_conf  = showing_result ? r_conf : conf_count
         string c_score = showing_result ? "-" : str.tostring(t_dir == "SELL" ? bear_score : bull_score, "#") + "/100"
-        string c_why   = (showing_result ? r_reason : (smc_state + " " + (score_vwap != 0 ? "VWAP " : "") + (score_htf != 0 ? "HTF " : "") + (score_liq != 0 ? "SWEEP " : "") + (score_fvg != 0 ? "FVG " : "") + (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : "PREMIUM ") : "") + (score_conf != 0 ? "CONF " : "") + (t_be_armed ? "BE " : ""))) + "\nOPEN " + str.tostring(t_open) + "%"
+        string c_why   = (showing_result ? r_reason : (smc_state + " " + (score_vwap != 0 ? "VWAP " : "") + (score_htf != 0 ? "HTF " : "") + (score_liq != 0 ? "SWEEP " : "") + (score_fvg != 0 ? "FVG " : "") + (score_ob != 0 ? "OB " : "") + (score_fib != 0 ? (in_discount ? "DISCOUNT " : (in_premium ? "PREMIUM " : "")) : "") + (score_conf != 0 ? "CONF " : "") + (t_be_armed ? "BE " : ""))) + "\nOPEN " + str.tostring(t_open) + "%"
 
         table.cell(card, 0, 0, c_title, bgcolor=c_head, text_color=col_text, text_size=size.small)
         table.cell(card, 0, 1, "MODE",       text_color=col_dim,  text_size=size.small)
@@ -688,11 +809,8 @@ if show_struct
     if choch_bear
         label.new(bar_index, high, "CHOCH-", style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.tiny)
 
-// FVG Boxes
-if show_fvg and barOK and bull_fvg_cond and (low - high[2]) > atr_val * fvg_min_size
-    box.new(bar_index-2, low, bar_index, high[2], bgcolor=color.new(bull_col, 85), border_color=color.new(bull_col, 50))
-if show_fvg and barOK and bear_fvg_cond and (low[2] - high) > atr_val * fvg_min_size
-    box.new(bar_index-2, low[2], bar_index, high, bgcolor=color.new(bear_col, 85), border_color=color.new(bear_col, 50))
+// FVG and order block boxes are created and destroyed alongside their records
+// in sections 5 and 6, which is why they are not drawn here.
 
 // Liquidity Sweep Labels
 // P0: liq_sweep_* already require barOK internally.
