@@ -1,0 +1,413 @@
+//@version=5
+indicator("XAUUSD SMC VWAP Engine [Quant]", overlay=true, max_lines_count=50, max_boxes_count=50, max_labels_count=50)
+
+// =========================================================================
+// 1. INPUT
+// =========================================================================
+grp_vwap  = "VWAP Settings"
+grp_smc   = "SMC Settings"
+grp_liq   = "Liquidity Settings"
+grp_fvg   = "FVG Settings"
+grp_ob    = "Order Block Settings"
+grp_fib   = "Fibonacci Settings"
+grp_atr   = "ATR & Volatility"
+grp_sig   = "Signal Settings"
+grp_dash  = "Dashboard Settings"
+grp_vis   = "Visual Settings"
+
+// VWAP
+show_vwap         = input.bool(true, "Show Session VWAP", group=grp_vwap)
+show_vwap_anchored= input.bool(false, "Show Anchored VWAP", group=grp_vwap)
+anchor_date       = input.time(timestamp("2024-01-01 00:00"), "Anchor Date", group=grp_vwap)
+vwap_mult         = input.float(1.5, "VWAP Band Multiplier", group=grp_vwap)
+
+// SMC
+swing_len         = input.int(5, "Swing Sensitivity", minval=1, group=grp_smc)
+show_struct       = input.bool(true, "Show Structure (BOS/CHOCH)", group=grp_smc)
+
+// Liquidity
+eq_tolerance      = input.float(0.5, "Equal High/Low Tolerance (Ticks)", group=grp_liq)
+show_liq          = input.bool(true, "Show Liquidity Sweeps", group=grp_liq)
+
+// FVG
+show_fvg          = input.bool(true, "Show FVG", group=grp_fvg)
+fvg_min_size      = input.float(0.5, "FVG Min Size (ATR Mult)", group=grp_fvg)
+fvg_mitigated_del = input.bool(true, "Delete Mitigated FVG", group=grp_fvg)
+
+// OB
+show_ob           = input.bool(true, "Show Order Blocks", group=grp_ob)
+ob_max_count      = input.int(5, "Max Active OBs", group=grp_ob)
+
+// Fib
+show_fib          = input.bool(true, "Show Fibonacci", group=grp_fib)
+
+// ATR
+atr_len           = input.int(14, "ATR Length", group=grp_atr)
+min_atr_filter    = input.float(0.0, "Minimum ATR Filter", group=grp_atr)
+atr_sl_mult       = input.float(1.5, "ATR SL Buffer Multiplier", group=grp_atr)
+
+// Signals (DIUBAH: Default min_score diturunkan menjadi 60)
+min_score         = input.int(60, "Minimum Score (0-100)", group=grp_sig)
+cooldown_bars     = input.int(10, "Signal Cooldown Bars", group=grp_sig)
+
+// Dashboard
+show_dash         = input.bool(true, "Show Dashboard", group=grp_dash)
+
+// Visuals
+bull_col          = input.color(color.new(color.teal, 0), "Bull Color", group=grp_vis)
+bear_col          = input.color(color.new(color.red, 0), "Bear Color", group=grp_vis)
+
+// =========================================================================
+// 2. VWAP ENGINE
+// =========================================================================
+src_hlc3 = hlc3
+cum_vol = ta.cum(volume)
+session_vwap = ta.vwap(src_hlc3)
+std_dev = ta.stdev(src_hlc3, 20)
+upper_band = session_vwap + std_dev * vwap_mult
+lower_band = session_vwap - std_dev * vwap_mult
+
+is_anchored = time >= anchor_date
+anc_vol = ta.cum(is_anchored ? volume : 0)
+anc_pv  = ta.cum(is_anchored ? src_hlc3 * volume : 0)
+anchored_vwap = anc_vol > 0 ? anc_pv / anc_vol : na
+
+vwap_val = show_vwap_anchored ? anchored_vwap : session_vwap
+vwap_slope = ta.mom(vwap_val, 3)
+vwap_bull = close > vwap_val and vwap_slope > 0
+vwap_bear = close < vwap_val and vwap_slope < 0
+
+plot(show_vwap ? vwap_val : na, "VWAP", color=color.yellow, linewidth=2)
+plot(show_vwap ? upper_band : na, "VWAP Upper", color=color.new(color.yellow, 50))
+plot(show_vwap ? lower_band : na, "VWAP Lower", color=color.new(color.yellow, 50))
+
+// =========================================================================
+// 3. MARKET STRUCTURE ENGINE (Swing, BOS, CHOCH)
+// =========================================================================
+ph = ta.pivothigh(high, swing_len, swing_len)
+pl = ta.pivotlow(low, swing_len, swing_len)
+
+var float last_swing_h = na
+var float last_swing_l = na
+var int swing_h_dir = 0 // 1 = HH, -1 = LH
+var int swing_l_dir = 0 // 1 = HL, -1 = LL
+
+var bool bos_bull = false
+var bool bos_bear = false
+var bool choch_bull = false
+var bool choch_bear = false
+
+if not na(ph)
+    if na(last_swing_h) or ph > last_swing_h
+        swing_h_dir := 1
+    else
+        swing_h_dir := -1
+    last_swing_h := ph
+
+if not na(pl)
+    if na(last_swing_l) or pl < last_swing_l
+        swing_l_dir := -1
+    else
+        swing_l_dir := 1
+    last_swing_l := pl
+
+// BOS & CHOCH Detection
+if close > last_swing_h and not na(last_swing_h)
+    if swing_h_dir == 1
+        bos_bull := true
+    else
+        choch_bull := true
+
+if close < last_swing_l and not na(last_swing_l)
+    if swing_l_dir == -1
+        bos_bear := true
+    else
+        choch_bear := true
+
+// =========================================================================
+// 4. LIQUIDITY ENGINE
+// =========================================================================
+eq_h = high < high[1] + eq_tolerance and high > high[1] - eq_tolerance and high[1] > high[2]
+eq_l = low > low[1] - eq_tolerance and low < low[1] + eq_tolerance and low[1] < low[2]
+
+liq_sweep_sell = low < last_swing_l and close > last_swing_l // Sell-side sweep (grab sell liq, then reverse up)
+liq_sweep_buy  = high > last_swing_h and close < last_swing_h // Buy-side sweep (grab buy liq, then reverse down)
+
+// =========================================================================
+// 5. FVG ENGINE
+// =========================================================================
+var array<float> fvg_top_arr = array.new_float()
+var array<float> fvg_bot_arr = array.new_float()
+var array<int>   fvg_type_arr = array.new_int() // 1 = Bull, -1 = Bear
+
+bull_fvg_cond = low > high[2] and close[1] > high[2]
+bear_fvg_cond = high < low[2] and close[1] < low[2]
+atr_val = ta.atr(atr_len)
+
+if bull_fvg_cond and (low - high[2]) > atr_val * fvg_min_size
+    array.push(fvg_top_arr, low)
+    array.push(fvg_bot_arr, high[2])
+    array.push(fvg_type_arr, 1)
+
+if bear_fvg_cond and (low[2] - high) > atr_val * fvg_min_size
+    array.push(fvg_top_arr, low[2])
+    array.push(fvg_bot_arr, high)
+    array.push(fvg_type_arr, -1)
+
+// Mitigate FVGs
+if array.size(fvg_top_arr) > 0
+    for i = array.size(fvg_top_arr) - 1 to 0
+        if array.get(fvg_type_arr, i) == 1 and close < array.get(fvg_bot_arr, i)
+            if fvg_mitigated_del
+                array.remove(fvg_top_arr, i)
+                array.remove(fvg_bot_arr, i)
+                array.remove(fvg_type_arr, i)
+        else if array.get(fvg_type_arr, i) == -1 and close > array.get(fvg_top_arr, i)
+            if fvg_mitigated_del
+                array.remove(fvg_top_arr, i)
+                array.remove(fvg_bot_arr, i)
+                array.remove(fvg_type_arr, i)
+
+in_bull_fvg = false
+in_bear_fvg = false
+if array.size(fvg_top_arr) > 0
+    for i = 0 to array.size(fvg_top_arr) - 1
+        if array.get(fvg_type_arr, i) == 1 and close >= array.get(fvg_bot_arr, i) and close <= array.get(fvg_top_arr, i)
+            in_bull_fvg := true
+        else if array.get(fvg_type_arr, i) == -1 and close <= array.get(fvg_top_arr, i) and close >= array.get(fvg_bot_arr, i)
+            in_bear_fvg := true
+
+// =========================================================================
+// 6. ORDER BLOCK ENGINE
+// =========================================================================
+var array<float> ob_top_arr = array.new_float()
+var array<float> ob_bot_arr = array.new_float()
+var array<int>   ob_type_arr = array.new_int()
+
+disp_bull = close > high[1] and (close - open) > atr_val * 1.5
+disp_bear = close < low[1] and (open - close) > atr_val * 1.5
+
+if disp_bull and close[1] < open[1]
+    if array.size(ob_top_arr) < ob_max_count * 2
+        array.push(ob_top_arr, high[1])
+        array.push(ob_bot_arr, low[1])
+        array.push(ob_type_arr, 1)
+
+if disp_bear and close[1] > open[1]
+    if array.size(ob_top_arr) < ob_max_count * 2
+        array.push(ob_top_arr, high[1])
+        array.push(ob_bot_arr, low[1])
+        array.push(ob_type_arr, -1)
+
+in_bull_ob = false
+in_bear_ob = false
+if array.size(ob_top_arr) > 0
+    for i = array.size(ob_top_arr) - 1 to 0
+        if array.get(ob_type_arr, i) == 1 and close >= array.get(ob_bot_arr, i) and close <= array.get(ob_top_arr, i)
+            in_bull_ob := true
+        else if array.get(ob_type_arr, i) == -1 and close <= array.get(ob_top_arr, i) and close >= array.get(ob_bot_arr, i)
+            in_bear_ob := true
+
+// =========================================================================
+// 7. FIBONACCI ENGINE
+// =========================================================================
+fib_0 = last_swing_l
+fib_100 = last_swing_h
+is_bull_fib = fib_100 > fib_0
+fib_50 = is_bull_fib ? (fib_100 - fib_0) * 0.5 + fib_0 : fib_0 - (fib_0 - fib_100) * 0.5
+fib_618 = is_bull_fib ? (fib_100 - fib_0) * 0.618 + fib_0 : fib_0 - (fib_0 - fib_100) * 0.618
+
+in_discount = close < fib_50
+in_premium = close > fib_50
+in_optimal_buy = is_bull_fib and close <= fib_618 and close >= fib_50
+in_optimal_sell = not is_bull_fib and close >= fib_618 and close <= fib_50
+
+// =========================================================================
+// 8. MULTI-TIMEFRAME ENGINE
+// =========================================================================
+get_mtf_bias(timeframe) =>
+    mtf_close = request.security(syminfo.tickerid, timeframe, close, barmerge.gaps_off, barmerge.lookahead_off)
+    mtf_vwap = request.security(syminfo.tickerid, timeframe, ta.vwap(hlc3), barmerge.gaps_off, barmerge.lookahead_off)
+    mtf_slope = request.security(syminfo.tickerid, timeframe, ta.mom(ta.vwap(hlc3), 3), barmerge.gaps_off, barmerge.lookahead_off)
+    bias = mtf_close > mtf_vwap and mtf_slope > 0 ? 1 : (mtf_close < mtf_vwap and mtf_slope < 0 ? -1 : 0)
+    bias
+
+h4_bias  = get_mtf_bias("240")
+h1_bias  = get_mtf_bias("60")
+m30_bias = get_mtf_bias("30")
+m15_bias = get_mtf_bias("15")
+m5_bias  = get_mtf_bias("5")
+
+htf_bull = h4_bias == 1 and h1_bias == 1
+htf_bear = h4_bias == -1 and h1_bias == -1
+
+// =========================================================================
+// 9. ENTRY ENGINE & SCORING
+// =========================================================================
+// Confirmation Candle
+bull_engulf = close > open and close > high[1] and open < low[1]
+bear_engulf = close < open and close < low[1] and open > high[1]
+bull_reject = (high - math.max(open, close)) > (math.abs(open - close) * 2) and close > open
+bear_reject = (math.min(open, close) - low) > (math.abs(open - close) * 2) and close < open
+conf_bull = bull_engulf or bull_reject
+conf_bear = bear_engulf or bear_reject
+
+// Scoring
+score_vwap  = vwap_bull ? 15 : (vwap_bear ? -15 : 0)
+score_htf   = htf_bull ? 15 : (htf_bear ? -15 : 0)
+score_smc   = (bos_bull or choch_bull) ? 15 : ((bos_bear or choch_bear) ? -15 : 0)
+score_liq   = liq_sweep_sell ? 15 : (liq_sweep_buy ? -15 : 0) // Sell liq sweep = Bullish
+score_fvg   = in_bull_fvg ? 10 : (in_bear_fvg ? -10 : 0)
+score_ob    = in_bull_ob ? 10 : (in_bear_ob ? -10 : 0)
+score_fib   = in_optimal_buy ? 10 : (in_optimal_sell ? -10 : 0)
+score_conf  = conf_bull ? 10 : (conf_bear ? -10 : 0)
+
+bull_score = (score_vwap>0?score_vwap:0) + (score_htf>0?score_htf:0) + (score_smc>0?score_smc:0) + (score_liq>0?score_liq:0) + (score_fvg>0?score_fvg:0) + (score_ob>0?score_ob:0) + (score_fib>0?score_fib:0) + (score_conf>0?score_conf:0)
+bear_score = math.abs((score_vwap<0?score_vwap:0) + (score_htf<0?score_htf:0) + (score_smc<0?score_smc:0) + (score_liq<0?score_liq:0) + (score_fvg<0?score_fvg:0) + (score_ob<0?score_ob:0) + (score_fib<0?score_fib:0) + (score_conf<0?score_conf:0))
+
+var int last_signal_bar = 0
+is_cooldown = (bar_index - last_signal_bar) < cooldown_bars
+vol_ok = atr_val > min_atr_filter
+
+// DIUBAH: Syarat Entry dilonggarkan. BOS/CHOCH & VWAP cukup untuk base trigger.
+// Fitur tambahan (Liq, FVG, OB, Fib) akan menambah skor. Jika skor mencapai min_score, sinyal tembak.
+is_low_risk_bull  = htf_bull and m15_bias==1 and (bos_bull or choch_bull) and vwap_bull
+is_med_risk_bull  = (bos_bull or choch_bull) and vwap_bull
+is_high_risk_bull = vwap_bull and conf_bull
+
+is_low_risk_bear  = htf_bear and m15_bias==-1 and (bos_bear or choch_bear) and vwap_bear
+is_med_risk_bear  = (bos_bear or choch_bear) and vwap_bear
+is_high_risk_bear = vwap_bear and conf_bear
+
+buy_signal = false
+sell_signal = false
+entry_type_str = ""
+
+if barstate.isconfirmed and vol_ok and not is_cooldown
+    if is_low_risk_bull and bull_score >= min_score
+        buy_signal := true
+        entry_type_str := "LOW"
+        last_signal_bar := bar_index
+    else if is_med_risk_bull and bull_score >= min_score
+        buy_signal := true
+        entry_type_str := "MEDIUM"
+        last_signal_bar := bar_index
+    else if is_high_risk_bull and bull_score >= min_score
+        buy_signal := true
+        entry_type_str := "HIGH"
+        last_signal_bar := bar_index
+    else if is_low_risk_bear and bear_score >= min_score
+        sell_signal := true
+        entry_type_str := "LOW"
+        last_signal_bar := bar_index
+    else if is_med_risk_bear and bear_score >= min_score
+        sell_signal := true
+        entry_type_str := "MEDIUM"
+        last_signal_bar := bar_index
+    else if is_high_risk_bear and bear_score >= min_score
+        sell_signal := true
+        entry_type_str := "HIGH"
+        last_signal_bar := bar_index
+
+// =========================================================================
+// 10. SL/TP ENGINE
+// =========================================================================
+var float sl = na
+var float tp1 = na
+var float tp2 = na
+var float tp3 = na
+var float entry_price = na
+
+if buy_signal
+    entry_price := close
+    sl_base = in_bull_ob ? array.get(ob_bot_arr, array.size(ob_bot_arr)-1) : last_swing_l
+    sl := sl_base - (atr_val * atr_sl_mult)
+    tp1 := entry_price + (entry_price - sl) * 1.0
+    tp2 := entry_price + (entry_price - sl) * 2.0
+    tp3 := entry_price + (entry_price - sl) * 3.0
+
+if sell_signal
+    entry_price := close
+    sl_base = in_bear_ob ? array.get(ob_top_arr, array.size(ob_top_arr)-1) : last_swing_h
+    sl := sl_base + (atr_val * atr_sl_mult)
+    tp1 := entry_price - (sl - entry_price) * 1.0
+    tp2 := entry_price - (sl - entry_price) * 2.0
+    tp3 := entry_price - (sl - entry_price) * 3.0
+
+// =========================================================================
+// 11. DASHBOARD ENGINE
+// =========================================================================
+var table dash = table.new(position.top_right, 2, 1, bgcolor=color.new(color.black, 80), border_width=1)
+
+if show_dash and barstate.islast
+    bias_str = vwap_bull ? "BULLISH" : (vwap_bear ? "BEARISH" : "NEUTRAL")
+    smc_str  = bos_bull ? "BOS BULL" : (choch_bull ? "CHOCH BULL" : (bos_bear ? "BOS BEAR" : (choch_bear ? "CHOCH BEAR" : "FLAT")))
+    liq_str  = liq_sweep_sell ? "SWEPT SELL" : (liq_sweep_buy ? "SWEPT BUY" : "NONE")
+    fvg_str  = in_bull_fvg ? "BULL" : (in_bear_fvg ? "BEAR" : "NONE")
+    ob_str   = in_bull_ob ? "BULL" : (in_bear_ob ? "BEAR" : "NONE")
+    fib_str  = in_discount ? "DISCOUNT" : (in_premium ? "PREMIUM" : "NEUTRAL")
+    score_str = buy_signal ? str.tostring(bull_score) : (sell_signal ? str.tostring(bear_score) : "0")
+    
+    cell_str = "XAUUSD SMC VWAP\n" + 
+               "BIAS      : " + bias_str + "\n" + 
+               "H4        : " + (h4_bias==1?"BULL":(h4_bias==-1?"BEAR":"NEUT")) + "\n" +
+               "H1        : " + (h1_bias==1?"BULL":(h1_bias==-1?"BEAR":"NEUT")) + "\n" +
+               "M15       : " + (m15_bias==1?"BULL":(m15_bias==-1?"BEAR":"NEUT")) + "\n" +
+               "SMC       : " + smc_str + "\n" +
+               "LIQUIDITY : " + liq_str + "\n" +
+               "FVG       : " + fvg_str + "\n" +
+               "OB        : " + ob_str + "\n" +
+               "FIB       : " + fib_str + "\n" +
+               "SCORE     : " + score_str + "/100\n" +
+               "ENTRY     : " + (buy_signal or sell_signal ? entry_type_str : "NO TRADE") + "\n" +
+               "SL        : " + (na(sl) ? "-" : str.tostring(sl, format.mintick)) + "\n" +
+               "TP1       : " + (na(tp1) ? "-" : str.tostring(tp1, format.mintick))
+    
+    table.cell(dash, 0, 0, cell_str, text_color=color.white, text_size=size.small)
+
+// =========================================================================
+// 12. VISUALIZATION ENGINE
+// =========================================================================
+// Structure Labels
+if show_struct and barstate.isconfirmed
+    if bos_bull
+        label.new(bar_index, low, "BOS+", style=label.style_label_up, color=bull_col, textcolor=color.white, size=size.tiny)
+    if choch_bull
+        label.new(bar_index, low, "CHOCH+", style=label.style_label_up, color=bull_col, textcolor=color.white, size=size.tiny)
+    if bos_bear
+        label.new(bar_index, high, "BOS-", style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.tiny)
+    if choch_bear
+        label.new(bar_index, high, "CHOCH-", style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.tiny)
+
+// FVG Boxes
+if show_fvg and bull_fvg_cond and (low - high[2]) > atr_val * fvg_min_size
+    box.new(bar_index-2, low, bar_index, high[2], bgcolor=color.new(bull_col, 85), border_color=color.new(bull_col, 50))
+if show_fvg and bear_fvg_cond and (low[2] - high) > atr_val * fvg_min_size
+    box.new(bar_index-2, low[2], bar_index, high, bgcolor=color.new(bear_col, 85), border_color=color.new(bear_col, 50))
+
+// Liquidity Sweep Labels
+if show_liq and barstate.isconfirmed
+    if liq_sweep_sell
+        label.new(bar_index, low, "Liq+", style=label.style_label_up, color=color.orange, size=size.tiny)
+    if liq_sweep_buy
+        label.new(bar_index, high, "Liq-", style=label.style_label_down, color=color.orange, size=size.tiny)
+
+// Signals
+plotshape_buy = buy_signal and barstate.isconfirmed
+plotshape_sell = sell_signal and barstate.isconfirmed
+
+if plotshape_buy
+    label.new(bar_index, low, "BUY\n" + entry_type_str, style=label.style_label_up, color=bull_col, textcolor=color.white, size=size.normal)
+
+if plotshape_sell
+    label.new(bar_index, high, "SELL\n" + entry_type_str, style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.normal)
+
+// =========================================================================
+// 13. ALERT ENGINE
+// =========================================================================
+alertcondition(plotshape_buy, "BUY Signal", "XAUUSD BUY {{ticker}} | Type: Low/Med/High")
+alertcondition(plotshape_sell, "SELL Signal", "XAUUSD SELL {{ticker}} | Type: Low/Med/High")
+alertcondition(bos_bull and barstate.isconfirmed, "BOS Bullish", "BOS Bullish detected on XAUUSD")
+alertcondition(choch_bull and barstate.isconfirmed, "CHOCH Bullish", "CHOCH Bullish detected on XAUUSD")
+alertcondition(liq_sweep_sell and barstate.isconfirmed, "Liquidity Sweep Sell", "Sell-side Liquidity Swept (Bullish Reversal)")
+alertcondition(vwap_bull and close > vwap_val and close[1] < vwap_val[1] and barstate.isconfirmed, "VWAP Reclaim", "Price reclaimed VWAP (Bullish)")

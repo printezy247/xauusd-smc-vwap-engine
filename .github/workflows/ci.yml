@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pine-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Runs first so a silently broken linter cannot pass CI forever.
+      - name: Linter selftest
+        run: python3 tools/pine_lint.py --selftest
+
+      - name: Lint Pine sources
+        run: python3 tools/pine_lint.py pine/*.pine
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Pine lint"
+            echo
+            echo "| file | lines |"
+            echo "|---|---|"
+            for f in pine/*.pine; do
+              echo "| \`$f\` | $(wc -l < "$f") |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
