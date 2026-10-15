@@ -1,0 +1,852 @@
+//@version=6
+// P7 companion backtest. Same signal path as the v4 indicator (sections
+// 1-9 shared: VWAP, structure, liquidity, FVG, OB, fib, confluence, MTF,
+// scoring, gate, session filter, and the P6 mode plan). Trimmed as
+// display-only or unmodellable: dashboard, alerts, tier labels, weighted
+// scores, m15 bias (never fed scoring), break-even/trailing. The stats table
+// below is what tunes the confluence gate instead of eyeballing.
+// KNOWN DIVERGENCES from the indicator, read before quoting a result:
+//   - Break-even and trailing are NOT modelled (strategy.exit cannot ratchet
+//     a stop the way section 10 does). Expect fewer small wins / more full
+//     stops than the indicator's card would show.
+//   - The plan is priced off the signal-bar close; the broker fills at the
+//     next open. Exit distances are exact in ticks from the real fill.
+//   - Costs are zero (commission 0, slippage 0). Set your own before sizing.
+//   - One position at a time, flat-gated like trade_busy; an opposite signal
+//     mid-trade is ignored, not reversed.
+//   - Nothing here has been compiled by a real Pine compiler either.
+strategy("XAUUSD SMC VWAP Engine [Backtest] v4", shorttitle="SMC VWAP BT v4", overlay=true,
+     pyramiding=0, default_qty_type=strategy.fixed, default_qty_value=1,
+     initial_capital=10000, currency=currency.USD,
+     commission_type=strategy.commission.percent, commission_value=0, slippage=0,
+     calc_on_every_tick=false, process_orders_on_close=false,
+     max_labels_count=150, max_boxes_count=50)
+
+// =========================================================================
+// 1. INPUT
+// =========================================================================
+grp_vwap  = "VWAP Settings"
+grp_smc   = "SMC Settings"
+grp_liq   = "Liquidity Settings"
+grp_fvg   = "FVG Settings"
+grp_ob    = "Order Block Settings"
+grp_fib   = "Fibonacci Settings"
+grp_conf  = "Confluence"
+grp_risk  = "Risk"
+grp_atr   = "ATR & Volatility"
+grp_sess  = "Session"
+grp_sig   = "Signal Settings"
+grp_trd   = "Trade Management"
+grp_vis   = "Visual Settings"
+
+// VWAP
+show_vwap         = input.bool(true, "Show Session VWAP", group=grp_vwap)
+show_vwap_anchored= input.bool(false, "Show Anchored VWAP", group=grp_vwap)
+anchor_src        = input.string("Session", "Anchor Mode", options=["Session", "Swing Leg", "Fixed Date"], group=grp_vwap)
+anchor_date       = input.time(timestamp("2024-01-01 00:00"), "Anchor Date (Fixed Date mode)", group=grp_vwap)
+vwap_mult         = input.float(1.5, "VWAP Band Multiplier", group=grp_vwap)
+
+// SMC
+swing_len         = input.int(5, "Swing Sensitivity", minval=1, group=grp_smc)
+show_struct       = input.bool(true, "Show Structure (BOS/CHOCH)", group=grp_smc)
+use_disp_choch    = input.bool(true, "Displacement-Quality CHOCH", group=grp_smc)
+disp_min_range    = input.float(0.70, "Min Range / ATR", minval=0.0, maxval=2.0, step=0.05, group=grp_smc)
+disp_min_body     = input.float(0.55, "Min Body %", minval=0.0, maxval=0.9, step=0.05, group=grp_smc)
+disp_min_break    = input.float(0.10, "Min Break / ATR", minval=0.0, maxval=0.5, step=0.05, group=grp_smc)
+
+// Liquidity
+show_liq          = input.bool(true, "Show Liquidity Sweeps", group=grp_liq)
+
+// FVG
+show_fvg          = input.bool(true, "Show FVG", group=grp_fvg)
+fvg_min_size      = input.float(0.5, "FVG Min Size (ATR Mult)", group=grp_fvg)
+fvg_mitigated_del = input.bool(true, "Delete Mitigated FVG", group=grp_fvg)
+fvg_max_size      = input.int(12, "Max Tracked FVGs", minval=1, maxval=40, group=grp_fvg)
+fvg_max_age       = input.int(300, "FVG Max Age (bars)", minval=10, group=grp_fvg)
+
+// OB
+show_ob           = input.bool(true, "Show Order Blocks", group=grp_ob)
+ob_max_count      = input.int(5, "Max Active OBs", group=grp_ob)
+ob_max_age        = input.int(200, "OB Max Age (bars)", minval=10, group=grp_ob)
+
+// Fib
+show_fib_levels   = input.bool(false, "Show Fibonacci 50 / 61.8", group=grp_fib)
+
+// ATR
+atr_len           = input.int(14, "ATR Length", group=grp_atr)
+atr_base_len      = input.int(50, "ATR Baseline Length", minval=1, group=grp_atr)
+min_atr_ratio     = input.float(0.0, "Min ATR Ratio (x baseline, 0 = off)", minval=0.0, step=0.05, group=grp_atr)
+
+// Signals (P5: the gate is now a confluence count, not a weighted sum — the
+// number is visible on the trade card and tunable while the chart is open)
+min_conf          = input.int(7, "Minimum Confluence (0-15)", minval=0, maxval=15, group=grp_sig)
+cooldown_bars     = input.int(10, "Signal Cooldown Bars", group=grp_sig)
+
+// Confluence
+conf_tol_pips     = input.float(70.0, "Proximity Tolerance (pips)", minval=5.0, step=5.0, group=grp_conf)
+use_brn           = input.bool(true, "Round-Number Confluence", group=grp_conf)
+brn_tol           = input.float(0.20, "BRN Tolerance (x ATR)", minval=0.05, maxval=1.0, step=0.05, group=grp_conf)
+use_regime        = input.bool(true, "EMA Regime Confluence", group=grp_conf)
+ema_fast_len      = input.int(13, "Fast EMA Length", minval=2, group=grp_conf)
+ema_slow_len      = input.int(50, "Slow EMA Length", minval=5, group=grp_conf)
+ema_slope_min     = input.float(0.01, "Min EMA Slope / ATR", minval=0.0, maxval=0.2, step=0.005, group=grp_conf)
+use_pdsweep       = input.bool(true, "Previous-Day Sweep + Reclaim", group=grp_conf)
+pdsweep_lookback  = input.int(6, "Sweep Lookback (bars)", minval=2, maxval=20, group=grp_conf)
+use_htf_cluster   = input.bool(true, "HTF Level Cluster", group=grp_conf)
+
+// Risk — EzyMapPro G3 model. Stops and targets derive from the mode, not
+// from fixed R multiples. ATR multiples stay hardcoded per mode exactly as
+// in EzyMap (stop 0.40/0.60/0.85, target 0.60/1.00/1.50).
+trade_mode        = input.string("INTRADAY", "Mode", options=["SCALP", "INTRADAY", "SWING"], group=grp_risk)
+scalp_stop        = input.float(20.0, "Scalp SL Buffer", minval=10.0, maxval=150.0, step=5.0, group=grp_risk)
+intraday_stop     = input.float(35.0, "Intraday SL Buffer", minval=10.0, maxval=300.0, step=5.0, group=grp_risk)
+swing_stop        = input.float(70.0, "Swing SL Buffer", minval=20.0, maxval=600.0, step=10.0, group=grp_risk)
+scalp_tmin        = input.float(15.0, "Scalp Target Minimum", minval=10.0, maxval=300.0, step=5.0, group=grp_risk)
+scalp_tmax        = input.float(80.0, "Scalp Target Maximum", minval=30.0, maxval=500.0, step=10.0, group=grp_risk)
+intraday_tmin     = input.float(60.0, "Intraday Target Minimum", minval=30.0, maxval=800.0, step=10.0, group=grp_risk)
+intraday_tmax     = input.float(250.0, "Intraday Target Maximum", minval=100.0, maxval=1500.0, step=50.0, group=grp_risk)
+swing_tmin        = input.float(180.0, "Swing Target Minimum", minval=100.0, maxval=2000.0, step=20.0, group=grp_risk)
+swing_tmax        = input.float(800.0, "Swing Target Maximum", minval=300.0, maxval=5000.0, step=100.0, group=grp_risk)
+minimum_rr        = input.float(0.6, "Minimum R:R", minval=0.5, maxval=1.0, step=0.1, group=grp_risk)
+maximum_rr        = input.float(2.5, "Maximum R:R", minval=1.0, maxval=5.0, step=0.5, group=grp_risk)
+snr_frontrun      = input.float(10.0, "TP / SL Before S&R", minval=5.0, maxval=100.0, step=5.0, group=grp_risk)
+use_session_filter= input.bool(false, "Use Session Filter", group=grp_risk)
+trade_asia        = input.bool(true, "Trade Asia", group=grp_risk)
+trade_london      = input.bool(true, "Trade London", group=grp_risk)
+trade_ny          = input.bool(true, "Trade New York", group=grp_risk)
+
+// Session
+asia_sess       = input.session("0000-0800", "Asian Session", group=grp_sess)
+london_sess     = input.session("0800-1600", "London Session", group=grp_sess)
+ny_sess         = input.session("1300-2200", "New York Session", group=grp_sess)
+
+// Trade Management (BE/trailing intentionally absent: not modelled, see header)
+tp1_close_pct     = input.int(50, "Close % at TP1 (0 = single exit at TP1)", minval=0, maxval=100, step=5, group=grp_trd)
+
+// Visuals
+bull_col          = input.color(color.new(color.teal, 0), "Bull Color", group=grp_vis)
+bear_col          = input.color(color.new(color.red, 0), "Bear Color", group=grp_vis)
+
+// =========================================================================
+// 1.5 RUNTIME GUARD
+// =========================================================================
+// One confirmed-bar flag now gates every state-mutating and drawing branch.
+// Without it, a realtime tick re-executes the open bar: FVG and OB array
+// pushes duplicate, and labels/boxes draw on unconfirmed closes.
+barOK = barstate.isconfirmed
+
+// Symbol-aware pip. A raw mintick "pip" on XAUUSD is 0.01, which turns a
+// 10-point gold move into 1000 pips. Gold quotes 0.10 per point.
+sym_key  = str.upper(syminfo.tickerid + " " + syminfo.root + " " + syminfo.description)
+is_gold  = str.contains(sym_key, "XAU") or str.contains(sym_key, "GOLD")
+pip_size = is_gold ? math.max(0.10, syminfo.mintick) : math.max(syminfo.mintick, 0.0001)
+
+f_clamp(float v, float lo, float hi) => math.max(lo, math.min(hi, v))
+
+// =========================================================================
+// 2. VWAP ENGINE
+// =========================================================================
+src_hlc3 = hlc3
+session_vwap = ta.vwap(src_hlc3)
+std_dev = ta.stdev(src_hlc3, 20)
+
+// P6: anchor_date 2024-01-01 turned the anchored line into a flat two-year
+// average. The anchor now defaults to the session (daily) open and restarts
+// every day; "Swing Leg" restarts at the last completed leg; "Fixed Date"
+// keeps the old input for manual work. Sums are manual `var` accumulators,
+// which also clears the two ta.cum v6 blockers (P7) a phase early.
+// volume is nz-guarded: a na print used to poison the whole average.
+var float anc_pv_sum       = 0.0
+var float anc_vol_sum      = 0.0
+var bool  leg_anchor_reset = false
+day_chg = ta.change(time("D"))
+new_day = not na(day_chg) and day_chg != 0
+anchor_reset = anchor_src == "Session" ? new_day : anchor_src == "Swing Leg" ? leg_anchor_reset : false
+
+if anchor_src == "Fixed Date"
+    if time >= anchor_date
+        anc_pv_sum  := anc_pv_sum + nz(src_hlc3 * volume, 0.0)
+        anc_vol_sum := anc_vol_sum + nz(volume, 0.0)
+else if anchor_reset
+    anc_pv_sum  := nz(src_hlc3 * volume, 0.0)
+    anc_vol_sum := nz(volume, 0.0)
+else
+    anc_pv_sum  := anc_pv_sum + nz(src_hlc3 * volume, 0.0)
+    anc_vol_sum := anc_vol_sum + nz(volume, 0.0)
+leg_anchor_reset := false
+anchored_vwap = anc_vol_sum > 0 ? anc_pv_sum / anc_vol_sum : na
+
+// B6: the bands used to hug the session line even in anchored mode. They now
+// follow the active line. std_dev itself stays a session-rolling stdev.
+band_base  = show_vwap_anchored ? anchored_vwap : session_vwap
+upper_band = band_base + std_dev * vwap_mult
+lower_band = band_base - std_dev * vwap_mult
+
+vwap_val = show_vwap_anchored ? anchored_vwap : session_vwap
+vwap_slope = ta.mom(vwap_val, 3)
+vwap_bull = close > vwap_val and vwap_slope > 0
+vwap_bear = close < vwap_val and vwap_slope < 0
+
+plot(show_vwap ? vwap_val : na, "VWAP", color=color.yellow, linewidth=2)
+plot(show_vwap ? upper_band : na, "VWAP Upper", color=color.new(color.yellow, 50))
+plot(show_vwap ? lower_band : na, "VWAP Lower", color=color.new(color.yellow, 50))
+
+// =========================================================================
+// 3. MARKET STRUCTURE ENGINE (Swing, BOS, CHOCH)
+// =========================================================================
+ph = ta.pivothigh(high, swing_len, swing_len)
+pl = ta.pivotlow(low, swing_len, swing_len)
+
+var float last_swing_h = na
+var float last_swing_l = na
+var int swing_h_dir = 0 // 1 = HH, -1 = LH, 0 = no prior leg yet
+var int swing_l_dir = 0 // 1 = HL, -1 = LL, 0 = no prior leg yet
+
+// P1: last completed swing leg. leg_up is the leg's own direction, which also
+// fixes v1's fib where discount and premium were inverted on bearish legs.
+var float leg_high = na
+var float leg_low  = na
+var bool  leg_up   = na
+
+// P1: displacement quality. BOS is continuation and needs none of this, but a
+// CHOCH is the single most common and least selective trigger, so it has to
+// prove the move was a displacement rather than a drift through the level.
+atr_safe     = math.max(atr_val, syminfo.mintick)
+disp_range   = (high - low) / atr_safe
+disp_body    = math.abs(close - open) / math.max(high - low, syminfo.mintick)
+bull_break_a = na(last_swing_h) ? na : (close - last_swing_h) / atr_safe
+bear_break_a = na(last_swing_l) ? na : (last_swing_l - close) / atr_safe
+disp_ok      = not use_disp_choch or (disp_range >= disp_min_range and disp_body >= disp_min_body and
+              (na(bull_break_a) or bull_break_a >= disp_min_break) and (na(bear_break_a) or bear_break_a >= disp_min_break))
+
+// P0 B1/B2/B3/B11: breaks are momentary series bools, not latched `var` bools.
+// Latched flags stayed true for the rest of the session, which made every
+// later "BOS" a re-firing of the first one, drew a label on every bar, and
+// turned the entry rules into a plain vwap_bull test.
+//
+// Breaks are measured against the swing level in force BEFORE this bar's
+// pivot confirmation, so a break is classified against the leg it actually
+// broke instead of the pivot that just printed. swing_h_dir/swing_l_dir == 0
+// means no prior swing exists, so neither BOS nor CHOCH can fire yet — the
+// first break of a series has no structure to break.
+// P1 needs ATR inside the structure section (displacement quality), so it is
+// computed here rather than down in the FVG engine where v1 had it.
+atr_val = ta.atr(atr_len)
+
+// P1: a sweep that also closes through the level is a structure break, not a
+// sweep. Counting both double-scored the same event 15 + 15.
+bos_bull     = barOK and not na(last_swing_h) and close > last_swing_h and swing_h_dir == 1
+choch_bull   = barOK and not na(last_swing_h) and close > last_swing_h and swing_h_dir == -1 and disp_ok
+bos_bear     = barOK and not na(last_swing_l) and close < last_swing_l and swing_l_dir == -1
+choch_bear   = barOK and not na(last_swing_l) and close < last_swing_l and swing_l_dir == 1 and disp_ok
+
+// P1: a leg is the high/low pair of the last completed swing. v1 built fib from
+// last_swing_l and last_swing_h whatever order they happened to print in, which
+// put the levels on a range that was never a swing. Snapshots are taken before
+// the pivot blocks so the leg closes against the level it actually broke.
+prev_h = last_swing_h
+prev_l = last_swing_l
+
+if not na(ph)
+    if not na(prev_l) and ph > prev_l
+        leg_high := ph
+        leg_low  := prev_l
+        leg_up   := true
+        leg_anchor_reset := true
+    swing_h_dir := na(prev_h) ? 0 : (ph > prev_h ? 1 : -1)
+    last_swing_h := ph
+
+if not na(pl)
+    if not na(prev_h) and pl < prev_h
+        leg_high := prev_h
+        leg_low  := pl
+        leg_up   := false
+        leg_anchor_reset := true
+    swing_l_dir := na(prev_l) ? 0 : (pl < prev_l ? -1 : 1)
+    last_swing_l := pl
+
+// P0 B4: the break bools above are true for a single bar, so the panel needs
+// stored state to display anything. This replaces the old read of the latched
+// flags, which permanently showed whatever fired first.
+var string smc_state = "FLAT"
+if bos_bull
+    smc_state := "BOS BULL"
+else if choch_bull
+    smc_state := "CHOCH BULL"
+else if bos_bear
+    smc_state := "BOS BEAR"
+else if choch_bear
+    smc_state := "CHOCH BEAR"
+
+// =========================================================================
+// 4. LIQUIDITY ENGINE
+// =========================================================================
+// P0: the equal-high/low detector and its "Ticks" tolerance input were both
+// computed and never referenced, and the tolerance was compared against raw
+// price rather than ticks. Both deleted rather than renamed — deleting the
+// consumers makes the input dead too.
+liq_sweep_sell = barOK and not na(last_swing_l) and low < last_swing_l and close > last_swing_l and not (bos_bull or choch_bull) // Sell-side sweep (grab sell liq, then reverse up)
+liq_sweep_buy  = barOK and not na(last_swing_h) and high > last_swing_h and close < last_swing_h and not (bos_bear or choch_bear) // Buy-side sweep (grab buy liq, then reverse down)
+
+// =========================================================================
+// 5. FVG ENGINE
+// =========================================================================
+// P1: the record and its box are created together and destroyed together. v1
+// kept box drawing as a separate re-evaluated condition in the visualisation
+// section, so a mitigated gap stayed on the chart while the array said it was
+// gone. Both are hard-capped and age-limited now — v1 never removed an
+// unmitigated gap, so the arrays grew without bound across a long history.
+var array<float> fvg_top_arr = array.new<float>()
+var array<float> fvg_bot_arr = array.new<float>()
+var array<int>   fvg_type_arr = array.new<int>() // 1 = Bull, -1 = Bear
+var array<int>   fvg_bars_arr = array.new<int>()
+var array<box>   fvg_box_arr  = array.new<box>()
+
+bull_fvg_cond = low > high[2] and close[1] > high[2]
+bear_fvg_cond = high < low[2] and close[1] < low[2]
+
+// P0: barOK stops realtime ticks from pushing the same gap in twice.
+if barOK and bull_fvg_cond and (low - high[2]) > atr_val * fvg_min_size
+    array.push(fvg_top_arr, low)
+    array.push(fvg_bot_arr, high[2])
+    array.push(fvg_type_arr, 1)
+    array.push(fvg_bars_arr, bar_index)
+    array.push(fvg_box_arr, show_fvg ? box.new(bar_index-2, low, bar_index, high[2], bgcolor=color.new(bull_col, 85), border_color=color.new(bull_col, 50)) : na)
+
+if barOK and bear_fvg_cond and (low[2] - high) > atr_val * fvg_min_size
+    array.push(fvg_top_arr, low[2])
+    array.push(fvg_bot_arr, high)
+    array.push(fvg_type_arr, -1)
+    array.push(fvg_bars_arr, bar_index)
+    array.push(fvg_box_arr, show_fvg ? box.new(bar_index-2, low[2], bar_index, high, bgcolor=color.new(bear_col, 85), border_color=color.new(bear_col, 50)) : na)
+
+// Mitigate, then expire by age, then trim to the cap — all oldest first, so
+// the newest structure is never the thing that gets evicted.
+if barOK and array.size(fvg_top_arr) > 0
+    for i = array.size(fvg_top_arr) - 1 to 0
+        if array.get(fvg_type_arr, i) == 1 and close < array.get(fvg_bot_arr, i)
+            if fvg_mitigated_del
+                box.delete(array.get(fvg_box_arr, i))
+                array.remove(fvg_top_arr, i)
+                array.remove(fvg_bot_arr, i)
+                array.remove(fvg_type_arr, i)
+                array.remove(fvg_bars_arr, i)
+                array.remove(fvg_box_arr, i)
+        else if array.get(fvg_type_arr, i) == -1 and close > array.get(fvg_top_arr, i)
+            if fvg_mitigated_del
+                box.delete(array.get(fvg_box_arr, i))
+                array.remove(fvg_top_arr, i)
+                array.remove(fvg_bot_arr, i)
+                array.remove(fvg_type_arr, i)
+                array.remove(fvg_bars_arr, i)
+                array.remove(fvg_box_arr, i)
+
+    while array.size(fvg_top_arr) > 0 and bar_index - array.get(fvg_bars_arr, 0) > fvg_max_age
+        box.delete(array.get(fvg_box_arr, 0))
+        array.shift(fvg_top_arr)
+        array.shift(fvg_bot_arr)
+        array.shift(fvg_type_arr)
+        array.shift(fvg_bars_arr)
+        array.shift(fvg_box_arr)
+
+    while array.size(fvg_top_arr) > fvg_max
+        box.delete(array.get(fvg_box_arr, 0))
+        array.shift(fvg_top_arr)
+        array.shift(fvg_bot_arr)
+        array.shift(fvg_type_arr)
+        array.shift(fvg_bars_arr)
+        array.shift(fvg_box_arr)
+
+in_bull_fvg = false
+in_bear_fvg = false
+if array.size(fvg_top_arr) > 0
+    for i = 0 to array.size(fvg_top_arr) - 1
+        if array.get(fvg_type_arr, i) == 1 and close >= array.get(fvg_bot_arr, i) and close <= array.get(fvg_top_arr, i)
+            in_bull_fvg := true
+        else if array.get(fvg_type_arr, i) == -1 and close <= array.get(fvg_top_arr, i) and close >= array.get(fvg_bot_arr, i)
+            in_bear_fvg := true
+
+// =========================================================================
+// 6. ORDER BLOCK ENGINE
+// =========================================================================
+// P1: v1 never removed anything from these arrays and gated new pushes on
+// array.size < ob_max_count * 2, so once ten blocks had ever printed the gate
+// closed for the rest of the chart history and no new order block could ever
+// be recorded again. The stop engine then anchored to whatever was newest,
+// which was usually nowhere near the entry. Now: mitigate, expire by age,
+// trim oldest to the cap, then push — so the gate can never latch shut.
+var array<float> ob_top_arr = array.new<float>()
+var array<float> ob_bot_arr = array.new<float>()
+var array<int>   ob_type_arr = array.new<int>()
+var array<int>   ob_bars_arr = array.new<int>()
+var array<box>   ob_box_arr  = array.new<box>()
+
+disp_bull = close > high[1] and (close - open) > atr_val * 1.5
+disp_bear = close < low[1] and (open - close) > atr_val * 1.5
+
+// Mitigate: a block is dead once price has closed cleanly through it.
+if barOK and array.size(ob_top_arr) > 0
+    for i = array.size(ob_top_arr) - 1 to 0
+        bool ob_dead = array.get(ob_type_arr, i) == 1 ? close < array.get(ob_bot_arr, i) : close > array.get(ob_top_arr, i)
+        if ob_dead
+            box.delete(array.get(ob_box_arr, i))
+            array.remove(ob_top_arr, i)
+            array.remove(ob_bot_arr, i)
+            array.remove(ob_type_arr, i)
+            array.remove(ob_bars_arr, i)
+            array.remove(ob_box_arr, i)
+
+    while array.size(ob_top_arr) > 0 and bar_index - array.get(ob_bars_arr, 0) > ob_max_age
+        box.delete(array.get(ob_box_arr, 0))
+        array.shift(ob_top_arr)
+        array.shift(ob_bot_arr)
+        array.shift(ob_type_arr)
+        array.shift(ob_bars_arr)
+        array.shift(ob_box_arr)
+
+    while array.size(ob_top_arr) > ob_max_count
+        box.delete(array.get(ob_box_arr, 0))
+        array.shift(ob_top_arr)
+        array.shift(ob_bot_arr)
+        array.shift(ob_type_arr)
+        array.shift(ob_bars_arr)
+        array.shift(ob_box_arr)
+
+// P0: barOK, same reason as the FVG arrays above.
+if barOK and disp_bull and close[1] < open[1]
+    array.push(ob_top_arr, high[1])
+    array.push(ob_bot_arr, low[1])
+    array.push(ob_type_arr, 1)
+    array.push(ob_bars_arr, bar_index)
+    array.push(ob_box_arr, show_ob ? box.new(bar_index-1, low[1], bar_index, high[1], bgcolor=color.new(bull_col, 88), border_color=color.new(bull_col, 60)) : na)
+
+if barOK and disp_bear and close[1] > open[1]
+    array.push(ob_top_arr, high[1])
+    array.push(ob_bot_arr, low[1])
+    array.push(ob_type_arr, -1)
+    array.push(ob_bars_arr, bar_index)
+    array.push(ob_box_arr, show_ob ? box.new(bar_index-1, low[1], bar_index, high[1], bgcolor=color.new(bear_col, 88), border_color=color.new(bear_col, 60)) : na)
+
+in_bull_ob = false
+in_bear_ob = false
+if array.size(ob_top_arr) > 0
+    for i = array.size(ob_top_arr) - 1 to 0
+        if array.get(ob_type_arr, i) == 1 and close >= array.get(ob_bot_arr, i) and close <= array.get(ob_top_arr, i)
+            in_bull_ob := true
+        else if array.get(ob_type_arr, i) == -1 and close <= array.get(ob_top_arr, i) and close >= array.get(ob_bot_arr, i)
+            in_bear_ob := true
+
+// =========================================================================
+// 7. FIBONACCI ENGINE
+// =========================================================================
+// P1: measured on the tracked leg rather than on two pivots that printed at
+// unrelated times, and a leg too small to be a leg is rejected outright rather
+// than producing levels out of noise. v1 compared price against a bare
+// midpoint, which inverted both the discount and premium labels whenever the
+// leg happened to be bearish.
+leg_valid = not na(leg_high) and not na(leg_low) and math.abs(leg_high - leg_low) > atr_val * 0.5
+is_bull_fib = leg_valid and leg_up
+fib_50   = leg_valid ? leg_low + (leg_high - leg_low) * 0.500 : na
+fib_618  = leg_valid ? leg_low + (leg_high - leg_low) * 0.618 : na
+
+in_discount    = leg_valid and (is_bull_fib ? close < fib_50 : close > fib_50)
+in_premium     = leg_valid and (is_bull_fib ? close > fib_50 : close < fib_50)
+in_optimal_buy = leg_valid and is_bull_fib and close <= fib_618 and close >= fib_50
+in_optimal_sell = leg_valid and not is_bull_fib and close >= fib_618 and close <= fib_50
+
+plot(show_fib_levels and leg_valid ? fib_50 : na, "Fib 50", color=color.new(color.gray, 30), style=plot.style_linebr)
+plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(color.silver, 40), style=plot.style_linebr)
+
+// =========================================================================
+// 7.5 CONFLUENCE SOURCES
+// =========================================================================
+// P5: eight weighted terms cannot say which parts fired, and correlated terms
+// stack — v1 scored a bar that swept a low AND closed through it as both a
+// structure break and a sweep, 15 + 15, for one event. Each source here is an
+// independent question about the same bar, so the count means something.
+
+// Round numbers. Gold trades 100-point steps with 50 as the micro step.
+brn_step   = is_gold ? 100.0 : math.max(close * 0.01, syminfo.mintick * 100.0)
+f_near_brn(float px) => na(px) ? false : math.abs(px / brn_step - math.round(px / brn_step)) * brn_step <= atr_val * brn_tol
+brn_bull = use_brn and (f_near_brn(low) or f_near_brn(leg_low) or (f_near_brn(close) and close >= open))
+brn_bear = use_brn and (f_near_brn(high) or f_near_brn(leg_high) or (f_near_brn(close) and close < open))
+
+// EMA regime: which side of both EMAs, and is the fast one actually leaning.
+ema_f     = ta.ema(close, ema_fast_len)
+ema_s     = ta.ema(close, ema_slow_len)
+ema_slope = (ema_f - ema_f[1]) / atr_safe
+regime_bull = use_regime and close > ema_f and ema_f > ema_s and ema_slope >= ema_slope_min
+regime_bear = use_regime and close < ema_f and ema_f < ema_s and ema_slope <= -ema_slope_min
+
+// Previous-day sweep and reclaim: dipped through the prior day's extreme
+// inside the lookback, and is back on the correct side of it now.
+pdh = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, "D", low[1], barmerge.gaps_off, barmerge.lookahead_off)
+pdsweep_bull = use_pdsweep and not na(pdl) and ta.lowest(low, pdsweep_lookback) <= pdl and close > pdl
+pdsweep_bear = use_pdsweep and not na(pdh) and ta.highest(high, pdsweep_lookback) >= pdh and close < pdh
+
+// HTF level cluster: the leg's extreme sits on the higher-timeframe swing.
+htf_swing_h = request.security(syminfo.tickerid, "240", ta.pivothigh(high, swing_len, swing_len), barmerge.gaps_off, barmerge.lookahead_off)
+htf_swing_l = request.security(syminfo.tickerid, "240", ta.pivotlow(low, swing_len, swing_len), barmerge.gaps_off, barmerge.lookahead_off)
+conf_tol      = conf_tol_pips * pip_size
+cluster_bull  = use_htf_cluster and not na(leg_low) and not na(htf_swing_l) and math.abs(leg_low - htf_swing_l) <= conf_tol
+cluster_bear  = use_htf_cluster and not na(leg_high) and not na(htf_swing_h) and math.abs(leg_high - htf_swing_h) <= conf_tol
+
+// Displacement on its own, independent of whether it broke anything.
+disp_bull_src = disp_range >= disp_min_range and disp_body >= disp_min_body and close > open
+disp_bear_src = disp_range >= disp_min_range and disp_body >= disp_min_body and close < open
+
+// VWAP reclaim is a cross; VWAP alignment is proximity, which is a different
+// question from "close is above the line".
+vwap_reclaim_bull = vwap_bull and close[1] <= vwap_val[1]
+vwap_reclaim_bear = vwap_bear and close[1] >= vwap_val[1]
+
+// =========================================================================
+// 8. MULTI-TIMEFRAME ENGINE
+// =========================================================================
+get_mtf_bias(timeframe) =>
+    mtf_close = request.security(syminfo.tickerid, timeframe, close, barmerge.gaps_off, barmerge.lookahead_off)
+    mtf_vwap = request.security(syminfo.tickerid, timeframe, ta.vwap(hlc3), barmerge.gaps_off, barmerge.lookahead_off)
+    mtf_slope = request.security(syminfo.tickerid, timeframe, ta.mom(ta.vwap(hlc3), 3), barmerge.gaps_off, barmerge.lookahead_off)
+    bias = mtf_close > mtf_vwap and mtf_slope > 0 ? 1 : (mtf_close < mtf_vwap and mtf_slope < 0 ? -1 : 0)
+    bias
+
+// P0: M30 and M5 biases were computed and never referenced anywhere in the
+// script — six wasted request.security calls removed.
+h4_bias  = get_mtf_bias("240")
+h1_bias  = get_mtf_bias("60")
+// m15_bias lives only in the indicator (tier labels); it never fed scoring.
+
+htf_bull = h4_bias == 1 and h1_bias == 1
+htf_bear = h4_bias == -1 and h1_bias == -1
+
+// =========================================================================
+// 8.5 SESSION CLOCK
+// =========================================================================
+// P3 displays the session, P6 filters on it. One source of truth here so the
+// panel and the filter can never drift onto different session strings.
+in_asia   = not na(time(timeframe.period, asia_sess))
+in_london = not na(time(timeframe.period, london_sess))
+in_ny     = not na(time(timeframe.period, ny_sess))
+in_session = in_london or in_ny or in_asia
+
+// P6: opt-in session filter. Off by default so default behaviour is unchanged.
+sess_ok = not use_session_filter or (trade_asia and in_asia) or (trade_london and in_london) or (trade_ny and in_ny)
+
+// =========================================================================
+// 9. ENTRY ENGINE & SCORING
+// =========================================================================
+// Confirmation Candle
+bull_engulf = close > open and close > high[1] and open < low[1]
+bear_engulf = close < open and close < low[1] and open > high[1]
+bull_reject = (high - math.max(open, close)) > (math.abs(open - close) * 2) and close > open
+bear_reject = (math.min(open, close) - low) > (math.abs(open - close) * 2) and close < open
+conf_bull = bull_engulf or bull_reject
+conf_bear = bear_engulf or bear_reject
+
+// Scoring
+score_vwap  = vwap_bull ? 15 : (vwap_bear ? -15 : 0)
+score_htf   = htf_bull ? 15 : (htf_bear ? -15 : 0)
+score_smc   = (bos_bull or choch_bull) ? 15 : ((bos_bear or choch_bear) ? -15 : 0)
+score_liq   = liq_sweep_sell ? 15 : (liq_sweep_buy ? -15 : 0) // Sell liq sweep = Bullish
+score_fvg   = in_bull_fvg ? 10 : (in_bear_fvg ? -10 : 0)
+score_ob    = in_bull_ob ? 10 : (in_bear_ob ? -10 : 0)
+score_fib   = in_optimal_buy ? 10 : (in_optimal_sell ? -10 : 0)
+score_conf  = conf_bull ? 10 : (conf_bear ? -10 : 0)
+
+// P3/P5: how many independent things agree. P5 added seven more sources: a
+// live swing leg, round numbers, EMA regime, previous-day sweep and reclaim,
+// HTF level cluster, displacement, and a VWAP cross. Max is 15.
+conf_bull_n = (score_vwap>0?1:0) + (score_htf>0?1:0) + (score_smc>0?1:0) + (score_liq>0?1:0) + (score_fvg>0?1:0) + (score_ob>0?1:0) + (score_fib>0?1:0) + (score_conf>0?1:0) +
+     (leg_valid?1:0) + (brn_bull?1:0) + (regime_bull?1:0) + (pdsweep_bull?1:0) + (cluster_bull?1:0) + (disp_bull_src?1:0) + (vwap_reclaim_bull?1:0)
+conf_bear_n = (score_vwap<0?1:0) + (score_htf<0?1:0) + (score_smc<0?1:0) + (score_liq<0?1:0) + (score_fvg<0?1:0) + (score_ob<0?1:0) + (score_fib<0?1:0) + (score_conf<0?1:0) +
+     (leg_valid?1:0) + (brn_bear?1:0) + (regime_bear?1:0) + (pdsweep_bear?1:0) + (cluster_bear?1:0) + (disp_bear_src?1:0) + (vwap_reclaim_bear?1:0)
+conf_dir    = buy_signal ? "BUY" : (sell_signal ? "SELL" : (vwap_bull ? "BUY" : (vwap_bear ? "SELL" : "NONE")))
+conf_count  = conf_dir == "BUY" ? conf_bull_n : conf_dir == "SELL" ? conf_bear_n : math.max(conf_bull_n, conf_bear_n)
+
+var int last_signal_bar = 0
+is_cooldown = (bar_index - last_signal_bar) < cooldown_bars
+
+// P0: the old filter compared ATR against a raw number, which meant the same
+// setting meant something completely different at gold 2400 and at gold 4000.
+// Now a ratio against ATR's own baseline. Default 0 keeps the filter off, so
+// default behaviour is unchanged.
+atr_baseline = ta.sma(atr_val, atr_base_len)
+vol_ok = min_atr_ratio <= 0 or (not na(atr_baseline) and atr_baseline > 0 and atr_val >= atr_baseline * min_atr_ratio)
+
+// DIUBAH: Syarat Entry dilonggarkan. BOS/CHOCH & VWAP cukup untuk base trigger.
+// Fitur tambahan (Liq, FVG, OB, Fib, dsb.) menambah jumlah confluence.
+// Jika hitungan mencapai min_conf, sinyal tembak.
+//
+// P5: the three risk tiers were three boolean gates ANDed with the score.
+// LOW is a strict subset of MEDIUM, so MEDIUM's own arm could never be
+// reached and the elif chain was dead precedence. There is now ONE gate and
+// the tier is a label on it.
+gate_bull = (bos_bull or choch_bull or conf_bull) and vwap_bull and conf_bull_n >= min_conf
+gate_bear = (bos_bear or choch_bear or conf_bear) and vwap_bear and conf_bear_n >= min_conf
+
+buy_signal = false
+sell_signal = false
+
+if barstate.isconfirmed and vol_ok and sess_ok and not is_cooldown
+    if gate_bull
+        buy_signal := true
+        last_signal_bar := bar_index
+    else if gate_bear
+        sell_signal := true
+        last_signal_bar := bar_index
+
+// =========================================================================
+// 12. VISUALIZATION ENGINE
+// =========================================================================
+// Structure Labels
+// P0: bos_*/choch_* already require barOK internally, so the extra guard is gone.
+if show_struct
+    if bos_bull
+        label.new(bar_index, low, "BOS+", style=label.style_label_up, color=bull_col, textcolor=color.white, size=size.tiny)
+    if choch_bull
+        label.new(bar_index, low, "CHOCH+", style=label.style_label_up, color=bull_col, textcolor=color.white, size=size.tiny)
+    if bos_bear
+        label.new(bar_index, high, "BOS-", style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.tiny)
+    if choch_bear
+        label.new(bar_index, high, "CHOCH-", style=label.style_label_down, color=bear_col, textcolor=color.white, size=size.tiny)
+
+// FVG and order block boxes are created and destroyed alongside their records
+// in sections 5 and 6, which is why they are not drawn here.
+
+// Liquidity Sweep Labels
+// P0: liq_sweep_* already require barOK internally.
+if show_liq
+    if liq_sweep_sell
+        label.new(bar_index, low, "Liq+", style=label.style_label_up, color=color.orange, size=size.tiny)
+    if liq_sweep_buy
+        label.new(bar_index, high, "Liq-", style=label.style_label_down, color=color.orange, size=size.tiny)
+
+// Signals (broker fills; the strategy engine draws its own trade markers)
+plotshape(buy_signal, title="BT BUY", style=shape.triangleup, location=location.belowbar, color=bull_col, size=size.tiny)
+plotshape(sell_signal, title="BT SELL", style=shape.triangledown, location=location.abovebar, color=bear_col, size=size.tiny)
+
+// =========================================================================
+// 10. STRATEGY ORDERS
+// =========================================================================
+// Same P6 mode plan as the indicator fill block, priced off the signal-bar
+// close (the broker fills at the next open; exits are exact in ticks from
+// the real fill). One position at a time: entries only when flat, mirroring
+// trade_busy — an opposite signal mid-trade is ignored, not reversed.
+
+// -- backtest bookkeeping (declared before use) ---------------------------
+var string bt_last_mode = "INTRADAY"
+var int    bt_entries   = 0
+var int    bt_conf_sum  = 0
+var int    bt_seen      = 0
+var float  bt_prev_net  = 0.0
+var float  bt_peak      = na
+var float  bt_maxdd     = 0.0
+var int    sc_n = 0
+var int    sc_w = 0
+var float  sc_gw = 0.0
+var float  sc_gl = 0.0
+var float  sc_net = 0.0
+var int    id_n = 0
+var int    id_w = 0
+var float  id_gw = 0.0
+var float  id_gl = 0.0
+var float  id_net = 0.0
+var int    sw_n = 0
+var int    sw_w = 0
+var float  sw_gw = 0.0
+var float  sw_gl = 0.0
+var float  sw_net = 0.0
+
+bt_flat = strategy.position_size == 0
+
+if (buy_signal or sell_signal) and bt_flat
+    bool sig_buy = buy_signal
+    float px = close
+    float stop_buf_pips = trade_mode == "SCALP" ? scalp_stop : trade_mode == "INTRADAY" ? intraday_stop : swing_stop
+    float tgt_min_pips  = trade_mode == "SCALP" ? scalp_tmin : trade_mode == "INTRADAY" ? intraday_tmin : swing_tmin
+    float tgt_max_pips  = trade_mode == "SCALP" ? scalp_tmax : trade_mode == "INTRADAY" ? intraday_tmax : swing_tmax
+    float stop_atr_mult = trade_mode == "SCALP" ? 0.40 : trade_mode == "INTRADAY" ? 0.60 : 0.85
+    float tgt_atr_mult  = trade_mode == "SCALP" ? 0.60 : trade_mode == "INTRADAY" ? 1.00 : 1.50
+    float snr_buf   = snr_frontrun * pip_size
+    float stop_buf  = stop_buf_pips * pip_size
+    float tgt_min_d = tgt_min_pips * pip_size
+    float tgt_max_d = tgt_max_pips * pip_size
+    float atr_ref   = nz(atr_val, tgt_min_d)
+    float vol_stop  = math.max(stop_buf, atr_ref * stop_atr_mult)
+    float vol_tgt   = atr_ref * tgt_atr_mult
+
+    float anchor = na
+    if sig_buy and array.size(ob_bot_arr) > 0
+        for i = array.size(ob_bot_arr) - 1 to 0
+            float ob = array.get(ob_bot_arr, i)
+            if array.get(ob_type_arr, i) == 1 and not na(ob) and ob < px and (na(anchor) or ob > anchor)
+                anchor := ob
+    if not sig_buy and array.size(ob_top_arr) > 0
+        for i = array.size(ob_top_arr) - 1 to 0
+            float ob = array.get(ob_top_arr, i)
+            if array.get(ob_type_arr, i) == -1 and not na(ob) and ob > px and (na(anchor) or ob < anchor)
+                anchor := ob
+
+    float tp_level = na
+    if sig_buy
+        if not na(last_swing_h) and last_swing_h > px
+            tp_level := last_swing_h
+        if array.size(ob_top_arr) > 0
+            for i = array.size(ob_top_arr) - 1 to 0
+                float lv = array.get(ob_top_arr, i)
+                if array.get(ob_type_arr, i) == -1 and not na(lv) and lv > px and (na(tp_level) or lv < tp_level)
+                    tp_level := lv
+    else
+        if not na(last_swing_l) and last_swing_l < px
+            tp_level := last_swing_l
+        if array.size(ob_bot_arr) > 0
+            for i = array.size(ob_bot_arr) - 1 to 0
+                float lv = array.get(ob_bot_arr, i)
+                if array.get(ob_type_arr, i) == 1 and not na(lv) and lv < px and (na(tp_level) or lv > tp_level)
+                    tp_level := lv
+
+    float swing   = sig_buy ? last_swing_l : last_swing_h
+    float base    = na(anchor) ? swing : anchor
+    float base_sl = na(base) ? (sig_buy ? px - vol_stop : px + vol_stop) : (sig_buy ? base - vol_stop : base + vol_stop)
+    float prot = na
+    if sig_buy and not na(base) and base < px - snr_buf
+        prot := base + snr_buf
+    if not sig_buy and not na(base) and base > px + snr_buf
+        prot := base - snr_buf
+    float stop = na(prot) ? base_sl : (sig_buy ? math.max(base_sl, prot) : math.min(base_sl, prot))
+    float risk = math.max(math.max(math.abs(px - stop), vol_stop), tgt_min_d / maximum_rr)
+    risk := math.max(risk, pip_size)
+
+    float desired = f_clamp(math.max(vol_tgt, risk * 1.5), tgt_min_d, tgt_max_d)
+    desired := math.min(desired, risk * maximum_rr)
+    float avail = na(tp_level) ? desired : (sig_buy ? tp_level - snr_buf - px : px - snr_buf - tp_level)
+    float reward = math.min(desired, avail)
+    float tp_px = na
+    if avail > 0 and reward >= risk * minimum_rr
+        tp_px := sig_buy ? px + reward : px - reward
+    else
+        float frisk   = math.max(vol_stop, tgt_min_d / maximum_rr)
+        float ffloor  = frisk * minimum_rr
+        float fceil   = math.max(ffloor, math.min(tgt_max_d, frisk * maximum_rr))
+        float freward = f_clamp(math.max(vol_tgt, tgt_min_d), ffloor, fceil)
+        stop  := sig_buy ? px - frisk : px + frisk
+        risk  := frisk
+        tp_px := sig_buy ? px + freward : px - freward
+
+    // Inverted levels cannot become broker orders; the indicator absorbs them
+    // into risk, the backtest skips the trade. Counted implicitly: an entry
+    // with no matching broker fill never appears in closedtrades.
+    bool plan_sane = sig_buy ? (stop < px and tp_px > px) : (stop > px and tp_px < px)
+    if plan_sane
+        float sgn = sig_buy ? 1.0 : -1.0
+        float tp_ticks = sgn * (tp_px - px) / syminfo.mintick
+        float sl_ticks = sgn * (px - stop) / syminfo.mintick
+        bt_last_mode := trade_mode
+        bt_entries += 1
+        bt_conf_sum += sig_buy ? conf_bull_n : conf_bear_n
+        if sig_buy
+            strategy.entry("L", strategy.long)
+            if tp1_close_pct > 0
+                strategy.exit("LTP1", "L", profit=tp_ticks / 2.0, qty_percent=tp1_close_pct)
+            strategy.exit("LRUN", "L", profit=tp_ticks, loss=sl_ticks)
+        else
+            strategy.entry("S", strategy.short)
+            if tp1_close_pct > 0
+                strategy.exit("STP1", "S", profit=tp_ticks / 2.0, qty_percent=tp1_close_pct)
+            strategy.exit("SRUN", "S", profit=tp_ticks, loss=sl_ticks)
+
+// =========================================================================
+// 11. BACKTEST STATS
+// =========================================================================
+// Closed trades are attributed to the mode in force at entry, so one table
+// tunes min_conf per mode instead of blindly. Expectancy is net per closed
+// trade in account currency; max drawdown is tracked off strategy.equity.
+bt_fmt(float v, string f) => na(v) ? "-" : str.tostring(v, f)
+bt_pct(float v) => na(v) ? "-" : str.tostring(v, "#.#") + "%"
+
+if strategy.closedtrades > bt_seen
+    float d = strategy.netprofit - bt_prev_net
+    bt_prev_net := strategy.netprofit
+    bt_seen := strategy.closedtrades
+    if bt_last_mode == "SCALP"
+        sc_n += 1
+        sc_net += d
+        if d > 0
+            sc_w += 1
+            sc_gw += d
+        else
+            sc_gl += -d
+    else if bt_last_mode == "SWING"
+        sw_n += 1
+        sw_net += d
+        if d > 0
+            sw_w += 1
+            sw_gw += d
+        else
+            sw_gl += -d
+    else
+        id_n += 1
+        id_net += d
+        if d > 0
+            id_w += 1
+            id_gw += d
+        else
+            id_gl += -d
+
+eq_now = strategy.equity
+bt_peak := na(bt_peak) ? eq_now : math.max(bt_peak, eq_now)
+bt_maxdd := math.max(bt_maxdd, bt_peak - eq_now)
+
+var table bt = table.new(position.bottom_right, 6, 5,
+     bgcolor=color.rgb(7, 10, 14), frame_color=color.rgb(66, 75, 86), frame_width=1,
+     border_color=color.new(color.rgb(66, 75, 86), 60), border_width=1)
+
+if barstate.islast
+    table.clear(bt, 0, 0, 5, 4)
+    int n_all = strategy.closedtrades
+    float wr_all = n_all > 0 ? 100.0 * strategy.wintrades / n_all : na
+    float pf_all = strategy.grossloss < 0 ? strategy.grossprofit / -strategy.grossloss : na
+    float ex_all = n_all > 0 ? strategy.netprofit / n_all : na
+    float wr_sc = sc_n > 0 ? 100.0 * sc_w / sc_n : na
+    float pf_sc = sc_gl > 0 ? sc_gw / sc_gl : na
+    float ex_sc = sc_n > 0 ? sc_net / sc_n : na
+    float wr_id = id_n > 0 ? 100.0 * id_w / id_n : na
+    float pf_id = id_gl > 0 ? id_gw / id_gl : na
+    float ex_id = id_n > 0 ? id_net / id_n : na
+    float wr_sw = sw_n > 0 ? 100.0 * sw_w / sw_n : na
+    float pf_sw = sw_gl > 0 ? sw_gw / sw_gl : na
+    float ex_sw = sw_n > 0 ? sw_net / sw_n : na
+    float avg_conf = bt_entries > 0 ? 1.0 * bt_conf_sum / bt_entries : na
+    color dim = color.rgb(150, 162, 175)
+    color txt = color.rgb(239, 243, 247)
+    table.cell(bt, 0, 0, "BACKTEST", text_color=dim, text_size=size.small)
+    table.cell(bt, 1, 0, "TRADES", text_color=dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 2, 0, "WIN%", text_color=dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 3, 0, "PF", text_color=dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 4, 0, "EXP", text_color=dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 5, 0, "MAXDD", text_color=dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 0, 1, "ALL", text_color=txt, text_size=size.small)
+    table.cell(bt, 1, 1, str.tostring(n_all), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 2, 1, bt_pct(wr_all), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 3, 1, bt_fmt(pf_all, "#.##"), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 4, 1, bt_fmt(ex_all, "#.##"), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 5, 1, bt_fmt(bt_maxdd, "#.##"), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 0, 2, "SCALP", text_color=txt, text_size=size.small)
+    table.cell(bt, 1, 2, str.tostring(sc_n), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 2, 2, bt_pct(wr_sc), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 3, 2, bt_fmt(pf_sc, "#.##"), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 4, 2, bt_fmt(ex_sc, "#.##"), text_color=na(ex_sc) ? dim : (ex_sc >= 0 ? txt : color.rgb(235, 72, 96)), text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 5, 2, "conf " + bt_fmt(avg_conf, "#.#"), text_color=dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 0, 3, "INTRADAY", text_color=txt, text_size=size.small)
+    table.cell(bt, 1, 3, str.tostring(id_n), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 2, 3, bt_pct(wr_id), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 3, 3, bt_fmt(pf_id, "#.##"), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 4, 3, bt_fmt(ex_id, "#.##"), text_color=na(ex_id) ? dim : (ex_id >= 0 ? txt : color.rgb(235, 72, 96)), text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 5, 3, "", text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 0, 4, "SWING", text_color=txt, text_size=size.small)
+    table.cell(bt, 1, 4, str.tostring(sw_n), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 2, 4, bt_pct(wr_sw), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 3, 4, bt_fmt(pf_sw, "#.##"), text_color=txt, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 4, 4, bt_fmt(ex_sw, "#.##"), text_color=na(ex_sw) ? dim : (ex_sw >= 0 ? txt : color.rgb(235, 72, 96)), text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 5, 4, "", text_color=txt, text_size=size.small, text_halign=text.align_right)

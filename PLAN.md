@@ -16,7 +16,7 @@ alert work: `EzyMapPro_v1_8.pine` (Pine v6, local copy at
 | **P1** | Structure integrity | **done** |
 | **P5** | Confluence scoring | **done** |
 | **P6** | Risk model + modes | **done** |
-| P7 | v6 migration + backtest harness | next |
+| **P7** | v6 migration + backtest harness | **done** |
 
 Build order is **P0 → P2 → P4 → P3 → P1 → P5 → P6 → P7**. Position lifecycle
 before the dashboard, because the card renders state that does not exist yet.
@@ -62,16 +62,27 @@ before the dashboard, because the card renders state that does not exist yet.
   the P7 backtest harness exists for exactly that. The weighted
   `bull_score`/`bear_score` are still computed but only feed the trade
   card's MODE line (`n/100` display); they no longer gate entries.
-- **OB array never shrinks.** `ob_max_count * 2` trips once and then blocks all
-  new order blocks for the rest of the chart history. The SL engine then reads
-  the *newest* OB, not the relevant one. Highest-severity remaining defect.
-  Belongs in P1.10.
-- FVG and OB arrays are unbounded and boxes are not tied to array state.
-- VWAP bands use `stdev(price)`, not VWAP variance, and do not follow the
-  anchored VWAP when that mode is on.
-- Fib levels are built from two independent pivots, not a real swing leg.
-- No position state machine: SL/TP are computed once and never tracked.
-- `ta.cum` still present — blocks the v6 migration.
+- **P7 BLIND-MIGRATION CAVEAT.** `pine/v4-VWAP-aly.pine` (`//@version=6`)
+  and `pine/strategy-backtest.pine` have never been compiled — no offline
+  Pine compiler exists, the linter is structural only. v3 stays as the
+  known-good v5 fallback. The backtest models entries + TP1 partial +
+  runner + SL only: no break-even, no trailing, zero costs, plan priced
+  off the signal close with next-open fills. Quote no number from it
+  until it compiles clean on TradingView and its fills are eyeballed
+  against the indicator's markers.
+- ~~OB array never shrinks~~ — closed by P1 (mitigation/max-age eviction
+  via `array.remove`; SL reads the nearest relevant OB).
+- ~~FVG/OB unbounded, boxes untied~~ — closed by P1 (bounded arrays,
+  `box.delete` tied to array state).
+- VWAP bands use `stdev(price)`, not VWAP variance. The anchored half is
+  fixed (P6/B6: bands follow the active line); the variance definition is
+  still open.
+- ~~Fib from two independent pivots~~ — closed by P1 (real swing leg).
+- ~~No position state machine~~ — closed by P2 (IDLE/ACTIVE/TP/SL/BE with
+  partials, break-even, trailing, blended P/L).
+- ~~`ta.cum` blocks v6~~ — closed by P6 (manual `var` sums in v3, carried
+  into v4). v1/v2 baselines still carry it and the linter still flags
+  them; they are frozen and that is expected.
 
 ## CI
 
@@ -83,6 +94,7 @@ failure modes that actually bit this script:
 - Pine v6 removals (`ta.cum`, bare `iff`/`offset`/`rnd`) — **warn**
 - alert messages hardcoding a symbol — **warn**
 - unbalanced brackets, tab indentation — **error**
+- duplicate global declarations (`=` redeclared; `:=` is reassignment) — **error**
 - object creation inside a loop — **warn**
 - version pragma sanity, indent multiples of 4 — **error** / **warn**
 
