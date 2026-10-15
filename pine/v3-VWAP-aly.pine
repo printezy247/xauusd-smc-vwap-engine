@@ -10,6 +10,7 @@ grp_liq   = "Liquidity Settings"
 grp_fvg   = "FVG Settings"
 grp_ob    = "Order Block Settings"
 grp_fib   = "Fibonacci Settings"
+grp_conf  = "Confluence"
 grp_atr   = "ATR & Volatility"
 grp_sess  = "Session"
 grp_sig   = "Signal Settings"
@@ -57,8 +58,9 @@ atr_base_len      = input.int(50, "ATR Baseline Length", minval=1, group=grp_atr
 min_atr_ratio     = input.float(0.0, "Min ATR Ratio (x baseline, 0 = off)", minval=0.0, step=0.05, group=grp_atr)
 atr_sl_mult       = input.float(1.5, "ATR SL Buffer Multiplier", group=grp_atr)
 
-// Signals (DIUBAH: Default min_score diturunkan menjadi 60)
-min_score         = input.int(60, "Minimum Score (0-100)", group=grp_sig)
+// Signals (P5: the gate is now a confluence count, not a weighted sum — the
+// number is visible on the trade card and tunable while the chart is open)
+min_conf          = input.int(7, "Minimum Confluence (0-15)", minval=0, maxval=15, group=grp_sig)
 cooldown_bars     = input.int(10, "Signal Cooldown Bars", group=grp_sig)
 
 // Dashboard
@@ -76,6 +78,18 @@ col_text   = input.color(color.rgb(239, 243, 247),  "Text",    inline="t3", grou
 col_dim    = input.color(color.rgb(150, 162, 175),  "Dim",     inline="t3", group=grp_theme)
 col_warn   = input.color(color.rgb(240, 158, 38),   "Warning", inline="t4", group=grp_theme)
 col_frame  = input.color(color.rgb(66, 75, 86),     "Frame",   inline="t4", group=grp_theme)
+
+// Confluence
+conf_tol_pips     = input.float(70.0, "Proximity Tolerance (pips)", minval=5.0, step=5.0, group=grp_conf)
+use_brn           = input.bool(true, "Round-Number Confluence", group=grp_conf)
+brn_tol           = input.float(0.20, "BRN Tolerance (x ATR)", minval=0.05, maxval=1.0, step=0.05, group=grp_conf)
+use_regime        = input.bool(true, "EMA Regime Confluence", group=grp_conf)
+ema_fast_len      = input.int(13, "Fast EMA Length", minval=2, group=grp_conf)
+ema_slow_len      = input.int(50, "Slow EMA Length", minval=5, group=grp_conf)
+ema_slope_min     = input.float(0.01, "Min EMA Slope / ATR", minval=0.0, maxval=0.2, step=0.005, group=grp_conf)
+use_pdsweep       = input.bool(true, "Previous-Day Sweep + Reclaim", group=grp_conf)
+pdsweep_lookback  = input.int(6, "Sweep Lookback (bars)", minval=2, maxval=20, group=grp_conf)
+use_htf_cluster   = input.bool(true, "HTF Level Cluster", group=grp_conf)
 
 // Session
 asia_sess       = input.session("0000-0800", "Asian Session", group=grp_sess)
@@ -126,7 +140,7 @@ f_pips(bool is_buy, float entry, float px) => is_buy ? (px - entry) / pip_size :
 f_px(float v) => na(v) ? "-" : str.tostring(v, format.mintick)
 f_signed(float v) => na(v) ? "-" : (v > 0 ? "+" : "") + str.tostring(v, "#.##") + " PIPS"
 f_pos(string s) => s == "Top Left" ? position.top_left : s == "Top Right" ? position.top_right : s == "Bottom Left" ? position.bottom_left : s == "Bottom Right" ? position.bottom_right : position.middle_right
-f_conf(int n) => n >= 6 ? "HIGH" : n >= 4 ? "MEDIUM" : n >= 2 ? "LOW" : "THIN"
+f_conf(int n) => n >= 10 ? "HIGH" : n >= 7 ? "MEDIUM" : n >= 4 ? "LOW" : "THIN"
 
 // =========================================================================
 // 2. VWAP ENGINE
@@ -416,6 +430,50 @@ plot(show_fib_levels and leg_valid ? fib_50 : na, "Fib 50", color=color.new(colo
 plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(color.silver, 40), style=plot.style_linebr)
 
 // =========================================================================
+// 7.5 CONFLUENCE SOURCES
+// =========================================================================
+// P5: eight weighted terms cannot say which parts fired, and correlated terms
+// stack — v1 scored a bar that swept a low AND closed through it as both a
+// structure break and a sweep, 15 + 15, for one event. Each source here is an
+// independent question about the same bar, so the count means something.
+
+// Round numbers. Gold trades 100-point steps with 50 as the micro step.
+brn_step   = is_gold ? 100.0 : math.max(close * 0.01, syminfo.mintick * 100.0)
+f_near_brn(float px) => na(px) ? false : math.abs(px / brn_step - math.round(px / brn_step)) * brn_step <= atr_val * brn_tol
+brn_bull = use_brn and (f_near_brn(low) or f_near_brn(leg_low) or (f_near_brn(close) and close >= open))
+brn_bear = use_brn and (f_near_brn(high) or f_near_brn(leg_high) or (f_near_brn(close) and close < open))
+
+// EMA regime: which side of both EMAs, and is the fast one actually leaning.
+ema_f     = ta.ema(close, ema_fast_len)
+ema_s     = ta.ema(close, ema_slow_len)
+ema_slope = (ema_f - ema_f[1]) / atr_safe
+regime_bull = use_regime and close > ema_f and ema_f > ema_s and ema_slope >= ema_slope_min
+regime_bear = use_regime and close < ema_f and ema_f < ema_s and ema_slope <= -ema_slope_min
+
+// Previous-day sweep and reclaim: dipped through the prior day's extreme
+// inside the lookback, and is back on the correct side of it now.
+pdh = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, "D", low[1], barmerge.gaps_off, barmerge.lookahead_off)
+pdsweep_bull = use_pdsweep and not na(pdl) and ta.lowest(low, pdsweep_lookback) <= pdl and close > pdl
+pdsweep_bear = use_pdsweep and not na(pdh) and ta.highest(high, pdsweep_lookback) >= pdh and close < pdh
+
+// HTF level cluster: the leg's extreme sits on the higher-timeframe swing.
+htf_swing_h = request.security(syminfo.tickerid, "240", ta.pivothigh(high, swing_len, swing_len), barmerge.gaps_off, barmerge.lookahead_off)
+htf_swing_l = request.security(syminfo.tickerid, "240", ta.pivotlow(low, swing_len, swing_len), barmerge.gaps_off, barmerge.lookahead_off)
+conf_tol      = conf_tol_pips * pip_size
+cluster_bull  = use_htf_cluster and not na(leg_low) and not na(htf_swing_l) and math.abs(leg_low - htf_swing_l) <= conf_tol
+cluster_bear  = use_htf_cluster and not na(leg_high) and not na(htf_swing_h) and math.abs(leg_high - htf_swing_h) <= conf_tol
+
+// Displacement on its own, independent of whether it broke anything.
+disp_bull_src = disp_range >= disp_min_range and disp_body >= disp_min_body and close > open
+disp_bear_src = disp_range >= disp_min_range and disp_body >= disp_min_body and close < open
+
+// VWAP reclaim is a cross; VWAP alignment is proximity, which is a different
+// question from "close is above the line".
+vwap_reclaim_bull = vwap_bull and close[1] <= vwap_val[1]
+vwap_reclaim_bear = vwap_bear and close[1] >= vwap_val[1]
+
+// =========================================================================
 // 8. MULTI-TIMEFRAME ENGINE
 // =========================================================================
 get_mtf_bias(timeframe) =>
@@ -465,12 +523,16 @@ score_ob    = in_bull_ob ? 10 : (in_bear_ob ? -10 : 0)
 score_fib   = in_optimal_buy ? 10 : (in_optimal_sell ? -10 : 0)
 score_conf  = conf_bull ? 10 : (conf_bear ? -10 : 0)
 
-// P3/P5: how many independent things agree, rather than a weighted sum with
-// no way to see which parts fired. P5 adds further sources to both counts.
-conf_bull_n = (score_vwap>0?1:0) + (score_htf>0?1:0) + (score_smc>0?1:0) + (score_liq>0?1:0) + (score_fvg>0?1:0) + (score_ob>0?1:0) + (score_fib>0?1:0) + (score_conf>0?1:0)
-conf_bear_n = (score_vwap<0?1:0) + (score_htf<0?1:0) + (score_smc<0?1:0) + (score_liq<0?1:0) + (score_fvg<0?1:0) + (score_ob<0?1:0) + (score_fib<0?1:0) + (score_conf<0?1:0)
+// P3/P5: how many independent things agree. P5 added seven more sources: a
+// live swing leg, round numbers, EMA regime, previous-day sweep and reclaim,
+// HTF level cluster, displacement, and a VWAP cross. Max is 15.
+conf_bull_n = (score_vwap>0?1:0) + (score_htf>0?1:0) + (score_smc>0?1:0) + (score_liq>0?1:0) + (score_fvg>0?1:0) + (score_ob>0?1:0) + (score_fib>0?1:0) + (score_conf>0?1:0) +
+     (leg_valid?1:0) + (brn_bull?1:0) + (regime_bull?1:0) + (pdsweep_bull?1:0) + (cluster_bull?1:0) + (disp_bull_src?1:0) + (vwap_reclaim_bull?1:0)
+conf_bear_n = (score_vwap<0?1:0) + (score_htf<0?1:0) + (score_smc<0?1:0) + (score_liq<0?1:0) + (score_fvg<0?1:0) + (score_ob<0?1:0) + (score_fib<0?1:0) + (score_conf<0?1:0) +
+     (leg_valid?1:0) + (brn_bear?1:0) + (regime_bear?1:0) + (pdsweep_bear?1:0) + (cluster_bear?1:0) + (disp_bear_src?1:0) + (vwap_reclaim_bear?1:0)
 conf_dir    = t_dir != "NONE" ? t_dir : (buy_signal ? "BUY" : (sell_signal ? "SELL" : (vwap_bull ? "BUY" : (vwap_bear ? "SELL" : "NONE"))))
 conf_count  = conf_dir == "BUY" ? conf_bull_n : conf_dir == "SELL" ? conf_bear_n : math.max(conf_bull_n, conf_bear_n)
+CONF_MAX    = 15
 
 bull_score = (score_vwap>0?score_vwap:0) + (score_htf>0?score_htf:0) + (score_smc>0?score_smc:0) + (score_liq>0?score_liq:0) + (score_fvg>0?score_fvg:0) + (score_ob>0?score_ob:0) + (score_fib>0?score_fib:0) + (score_conf>0?score_conf:0)
 bear_score = math.abs((score_vwap<0?score_vwap:0) + (score_htf<0?score_htf:0) + (score_smc<0?score_smc:0) + (score_liq<0?score_liq:0) + (score_fvg<0?score_fvg:0) + (score_ob<0?score_ob:0) + (score_fib<0?score_fib:0) + (score_conf<0?score_conf:0))
@@ -486,31 +548,30 @@ atr_baseline = ta.sma(atr_val, atr_base_len)
 vol_ok = min_atr_ratio <= 0 or (not na(atr_baseline) and atr_baseline > 0 and atr_val >= atr_baseline * min_atr_ratio)
 
 // DIUBAH: Syarat Entry dilonggarkan. BOS/CHOCH & VWAP cukup untuk base trigger.
-// Fitur tambahan (Liq, FVG, OB, Fib) akan menambah skor. Jika skor mencapai min_score, sinyal tembak.
-is_low_risk_bull  = htf_bull and m15_bias==1 and (bos_bull or choch_bull) and vwap_bull
-is_med_risk_bull  = (bos_bull or choch_bull) and vwap_bull
-is_high_risk_bull = vwap_bull and conf_bull
-
-is_low_risk_bear  = htf_bear and m15_bias==-1 and (bos_bear or choch_bear) and vwap_bear
-is_med_risk_bear  = (bos_bear or choch_bear) and vwap_bear
-is_high_risk_bear = vwap_bear and conf_bear
+// Fitur tambahan (Liq, FVG, OB, Fib, dsb.) menambah jumlah confluence.
+// Jika hitungan mencapai min_conf, sinyal tembak.
+//
+// P5: the three risk tiers were three boolean gates ANDed with the score.
+// LOW is a strict subset of MEDIUM, so MEDIUM's own arm could never be
+// reached and the elif chain was dead precedence. There is now ONE gate and
+// the tier is a label on it.
+gate_bull = (bos_bull or choch_bull or conf_bull) and vwap_bull and conf_bull_n >= min_conf
+gate_bear = (bos_bear or choch_bear or conf_bear) and vwap_bear and conf_bear_n >= min_conf
+tier_bull = htf_bull and m15_bias == 1 and (bos_bull or choch_bull) ? "LOW" : ((bos_bull or choch_bull) ? "MEDIUM" : "HIGH")
+tier_bear = htf_bear and m15_bias == -1 and (bos_bear or choch_bear) ? "LOW" : ((bos_bear or choch_bear) ? "MEDIUM" : "HIGH")
 
 buy_signal = false
 sell_signal = false
 entry_type_str = ""
 
-// P2: six near-identical branches collapsed to two. LOW is a strict subset of
-// MEDIUM, which is a strict subset of nothing else, so the elif chain could
-// never reach its MEDIUM and HIGH arms once LOW matched — three branches of
-// dead precedence. Priority is preserved exactly.
 if barstate.isconfirmed and vol_ok and not is_cooldown
-    if ((is_low_risk_bull or is_med_risk_bull or is_high_risk_bull) and bull_score >= min_score)
+    if gate_bull
         buy_signal := true
-        entry_type_str := (htf_bull and m15_bias == 1) ? "LOW" : ((bos_bull or choch_bull) ? "MEDIUM" : "HIGH")
+        entry_type_str := tier_bull
         last_signal_bar := bar_index
-    else if ((is_low_risk_bear or is_med_risk_bear or is_high_risk_bear) and bear_score >= min_score)
+    else if gate_bear
         sell_signal := true
-        entry_type_str := (htf_bear and m15_bias == -1) ? "LOW" : ((bos_bear or choch_bear) ? "MEDIUM" : "HIGH")
+        entry_type_str := tier_bear
         last_signal_bar := bar_index
 
 // =========================================================================
@@ -782,7 +843,7 @@ if show_card and barstate.islast
         table.cell(card, 0, 1, "MODE",       text_color=col_dim,  text_size=size.small)
         table.cell(card, 1, 1, c_kind + " • " + c_score, text_color=col_text, text_size=size.small, text_halign=text.align_right)
         table.cell(card, 0, 2, "CONFIDENCE", text_color=col_dim,  text_size=size.small)
-        table.cell(card, 1, 2, f_conf(c_conf) + " (" + str.tostring(c_conf) + ")", text_color=c_conf >= 4 ? col_buy : (c_conf >= 2 ? col_text : col_warn), text_size=size.small, text_halign=text.align_right)
+        table.cell(card, 1, 2, f_conf(c_conf) + " (" + str.tostring(c_conf) + "/" + str.tostring(CONF_MAX) + ")", text_color=c_conf >= 7 ? col_buy : (c_conf >= 4 ? col_text : col_warn), text_size=size.small, text_halign=text.align_right)
         table.cell(card, 0, 3, "ENTRY", text_color=col_dim,  text_size=size.small)
         table.cell(card, 1, 3, f_px(c_entry), text_color=col_text, text_size=size.small, text_halign=text.align_right)
         table.cell(card, 0, 4, "TP", text_color=col_dim,  text_size=size.small)

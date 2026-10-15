@@ -10,12 +10,12 @@ alert work: `EzyMapPro_v1_8.pine` (Pine v6, local copy at
 | Phase | Scope | State |
 |---|---|---|
 | **P0** | Truth pass — stop the script lying | **done** |
-| P1 | Structure integrity | next |
-| P2 | Position lifecycle (no state machine exists yet) | queued |
-| P3 | Dashboard rebuild, EzyMap style | queued |
-| P4 | Alert engine rebuild, EzyMap style | queued |
-| P5 | Confluence scoring | queued |
-| P6 | Risk model + modes | queued |
+| **P2** | Position lifecycle (no state machine exists yet) | **done** |
+| **P4** | Alert engine rebuild, EzyMap style | **done** |
+| **P3** | Dashboard rebuild, EzyMap style | **done** |
+| **P1** | Structure integrity | **done** |
+| **P5** | Confluence scoring | **done** |
+| P6 | Risk model + modes | next |
 | P7 | v6 migration + backtest harness | queued |
 
 Build order is **P0 → P2 → P4 → P3 → P1 → P5 → P6 → P7**. Position lifecycle
@@ -43,6 +43,14 @@ before the dashboard, because the card renders state that does not exist yet.
 
 ## Still open
 
+- **BEHAVIOUR CHANGE (P5): min_score → min_conf.** The signal gate was a
+  0-100 weighted sum (`bull_score >= min_score`, default 60). It is now a
+  count of agreeing independent sources (`conf_bull_n >= min_conf`,
+  default 7 of 15). Old workspaces keep no equivalent threshold — anyone
+  carrying a tuned `min_score` must retune `min_conf` from scratch, and
+  the P7 backtest harness exists for exactly that. The weighted
+  `bull_score`/`bear_score` are still computed but only feed the trade
+  card's MODE line (`n/100` display); they no longer gate entries.
 - **OB array never shrinks.** `ob_max_count * 2` trips once and then blocks all
   new order blocks for the rest of the chart history. The SL engine then reads
   the *newest* OB, not the relevant one. Highest-severity remaining defect.
