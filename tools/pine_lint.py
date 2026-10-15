@@ -188,12 +188,47 @@ def lint_text(text):
     check_objects_in_loop(code, warn)
     check_indent(raw, code, err, warn)
     check_alert_ticker(raw, warn)
+    check_duplicates(code, err)
     check_balance(code, err)
     return err, warn
 
 
 def lint(path):
     return lint_text(pathlib.Path(path).read_text(encoding="utf-8", errors="replace"))
+
+
+def check_duplicates(code_lines, err):
+    """A name declared twice at global scope is a Pine compile error.
+
+    Easy to introduce while threading a rename through a long script, and
+    the linter is the only thing standing between that and a paste error.
+    """
+    typed = re.compile(
+        r"^(?:const\s+|var\s+|varip\s+)?"
+        r"(?:(?:array|matrix)<[^>]+>|[\w.]+(?:\[\])?)?\s+"
+        r"([A-Za-z_]\w*)\s*(?::=|=(?!=))\s*\S")
+    bare = re.compile(r"^([A-Za-z_]\w*)\s*(?::=|=(?!=))\s*\S")
+    skip_decl = re.compile(r"^(?:indicator|strategy|library)\s*\(")
+    keywords = {"if", "else", "for", "while", "switch", "and", "or", "not", "to", "by", "from"}
+    seen = {}
+    for i, line in enumerate(code_lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        if line[:1].isspace():
+            continue  # indented = block-local, may legitimately shadow a global
+        if skip_decl.match(stripped):
+            continue  # indicator()/strategy() named args are not declarations
+        m = typed.match(stripped) or bare.match(stripped)
+        if not m:
+            continue
+        name = m.group(1)
+        if name in keywords:
+            continue
+        if name in seen:
+            err.append((i + 1, f"duplicate global declaration `{name}` (first at line {seen[name]})"))
+        else:
+            seen[name] = i + 1
 
 
 def selftest():
@@ -209,6 +244,8 @@ def selftest():
         ('//@version=6\nf() =>\n    str.tostring(x) + " (a) ("\n', "unbalanced", 0),
         ("//@version=6\nf() =>\n    a(1\n", "unbalanced", 1),
         ("//@version=6\nfor i = 0 to 3\n    label.new(bar_index, high)\n", "inside a loop", 1),
+        ("//@version=6\nmin_conf = input.int(7)\nmin_conf = input.int(9)\n", "duplicate global", 1),
+        ("//@version=6\nvar int a = 0\nif c\n    int a = 1\n    b := a\n", "duplicate global", 0),
         ("//@version=6\nx = ta.sma(close, 20)\n", None, 0),
     ]
     failures = 0
