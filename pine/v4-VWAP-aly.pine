@@ -224,10 +224,12 @@ vwap_slope = ta.mom(vwap_val, 3)
 vwap_bull = close > vwap_val and vwap_slope > 0
 vwap_bear = close < vwap_val and vwap_slope < 0
 
-// display.pane keeps plot values out of the status line and data window.
-p_vwap  = plot(show_vwap ? vwap_val : na, "VWAP", color=col_vwap, linewidth=2, display=display.pane)
-p_upper = plot(show_vwap ? upper_band : na, "VWAP Upper", color=color.new(col_vwap, 65), linewidth=1, display=display.pane)
-p_lower = plot(show_vwap ? lower_band : na, "VWAP Lower", color=color.new(col_vwap, 65), linewidth=1, display=display.pane)
+// Status line and data window hidden, price scale kept. display.pane alone drops the
+// price scale too, which puts the whole overlay on its own scale and detaches it from price.
+plot_disp = display.all - display.status_line - display.data_window
+p_vwap  = plot(show_vwap ? vwap_val : na, "VWAP", color=col_vwap, linewidth=2, display=plot_disp)
+p_upper = plot(show_vwap ? upper_band : na, "VWAP Upper", color=color.new(col_vwap, 65), linewidth=1, display=plot_disp)
+p_lower = plot(show_vwap ? lower_band : na, "VWAP Lower", color=color.new(col_vwap, 65), linewidth=1, display=plot_disp)
 fill(p_upper, p_lower, color=color.new(col_vwap, 94), title="VWAP Band")
 
 // =========================================================================
@@ -475,8 +477,8 @@ in_premium     = leg_valid and (is_bull_fib ? close > fib_50 : close < fib_50)
 in_optimal_buy = leg_valid and is_bull_fib and close <= fib_618 and close >= fib_50
 in_optimal_sell = leg_valid and not is_bull_fib and close >= fib_618 and close <= fib_50
 
-plot(show_fib_levels and leg_valid ? fib_50 : na, "Fib 50", color=color.new(col_dim, 30), style=plot.style_linebr, display=display.pane)
-plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(col_dim, 55), style=plot.style_linebr, display=display.pane)
+plot(show_fib_levels and leg_valid ? fib_50 : na, "Fib 50", color=color.new(col_dim, 30), style=plot.style_linebr, display=plot_disp)
+plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(col_dim, 55), style=plot.style_linebr, display=plot_disp)
 
 // =========================================================================
 // 7.5 CONFLUENCE SOURCES
@@ -993,9 +995,9 @@ if show_liq
 
 // Mode targets. P6: the fixed 1R/2R/3R ladder is gone — TP1 is the partial
 // (halfway to plan) and TP the runner (full plan). TP2 had no other reader.
-plot(show_tps and not na(t_tp1) ? t_tp1 : na, "TP1", color=color.new(bull_col, 40), style=plot.style_linebr, linewidth=1, display=display.pane)
-plot(show_tps and not na(t_tp3) ? t_tp3 : na, "TP", color=color.new(bull_col, 75), style=plot.style_linebr, linewidth=1, display=display.pane)
-plot(show_tps and not na(t_sl) ? t_sl : na, "SL", color=color.new(bear_col, 25), style=plot.style_linebr, linewidth=2, display=display.pane)
+plot(show_tps and not na(t_tp1) ? t_tp1 : na, "TP1", color=color.new(bull_col, 40), style=plot.style_linebr, linewidth=1, display=plot_disp)
+plot(show_tps and not na(t_tp3) ? t_tp3 : na, "TP", color=color.new(bull_col, 75), style=plot.style_linebr, linewidth=1, display=plot_disp)
+plot(show_tps and not na(t_sl) ? t_sl : na, "SL", color=color.new(bear_col, 25), style=plot.style_linebr, linewidth=2, display=plot_disp)
 
 // P2: markers moved from the signal bar to the bar the position actually
 // opens, because that is the bar the levels belong to. Exit markers report
