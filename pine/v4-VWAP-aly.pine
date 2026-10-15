@@ -502,8 +502,10 @@ regime_bear = use_regime and close < ema_f and ema_f < ema_s and ema_slope <= -e
 // Previous-day sweep and reclaim: dipped through the prior day's extreme
 // inside the lookback, and is back on the correct side of it now.
 [pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], barmerge.gaps_off, barmerge.lookahead_off)
-pdsweep_bull = use_pdsweep and not na(pdl) and ta.lowest(low, pdsweep_lookback) <= pdl and close > pdl
-pdsweep_bear = use_pdsweep and not na(pdh) and ta.highest(high, pdsweep_lookback) >= pdh and close < pdh
+recent_low  = ta.lowest(low, pdsweep_lookback)
+recent_high = ta.highest(high, pdsweep_lookback)
+pdsweep_bull = use_pdsweep and not na(pdl) and recent_low <= pdl and close > pdl
+pdsweep_bear = use_pdsweep and not na(pdh) and recent_high >= pdh and close < pdh
 
 // HTF level cluster: the leg's extreme sits on the higher-timeframe swing.
 [htf_swing_h, htf_swing_l] = request.security(syminfo.tickerid, "240", [ta.pivothigh(high, swing_len, swing_len), ta.pivotlow(low, swing_len, swing_len)], barmerge.gaps_off, barmerge.lookahead_off)
