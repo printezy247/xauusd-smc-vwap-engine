@@ -206,8 +206,9 @@ var int swing_l_dir = 0 // 1 = HL, -1 = LL, 0 = no prior leg yet
 // fixes v1's fib where discount and premium were inverted on bearish legs.
 var float leg_high = na
 var float leg_low  = na
-var bool  leg_up   = false // v6: bool can never be na. false is dead until
-                             // the first leg — every reader is gated by leg_valid.
+var bool  leg_up   = false
+// v6: bool can never be na. false is dead until the first leg — every
+// reader is gated by leg_valid.
 
 // P1: displacement quality. BOS is continuation and needs none of this, but a
 // CHOCH is the single most common and least selective trigger, so it has to
