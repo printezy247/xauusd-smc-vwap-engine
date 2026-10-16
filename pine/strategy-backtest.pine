@@ -11,14 +11,24 @@
 //     stops than the indicator's card would show.
 //   - The plan is priced off the signal-bar close; the broker fills at the
 //     next open. Exit distances are exact in ticks from the real fill.
-//   - Costs are zero (commission 0, slippage 0). Set your own before sizing.
+//   - Costs: commission stays 0 (this models a spread-only account, so a
+//     percent commission would double-count), but slippage is 2 ticks of real
+//     adverse fill rather than 0. XAUUSD quotes 0.10/tick, so 2 ticks models
+//     roughly a 0.20-0.30 spread round trip. Raise it to your broker's fill
+//     quality before quoting any number. These are declaration parameters and
+//     must be const — they cannot be inputs.
+//   - Drawdown halt: entry stops permanently once equity is max_dd_halt % below
+//     its peak. strategy.risk() needs a const value, so an input cannot drive
+//     it; the halt is computed from the input instead.
 //   - One position at a time, flat-gated like trade_busy; an opposite signal
 //     mid-trade is ignored, not reversed.
-//   - Nothing here has been compiled by a real Pine compiler either.
+//   - Offline it has only been transpiled by PineTS (LuxAlgo's open-source
+//     Pine runtime), not by TradingView's own compiler — see tools/pine_compile.mjs.
+//     TradingView remains the authority; paste to confirm.
 strategy("XAUUSD SMC VWAP Engine [Backtest] v4", shorttitle="SMC VWAP BT v4", overlay=true,
      pyramiding=0, default_qty_type=strategy.fixed, default_qty_value=1,
      initial_capital=10000, currency=currency.USD,
-     commission_type=strategy.commission.percent, commission_value=0, slippage=0,
+     commission_type=strategy.commission.percent, commission_value=0, slippage=2,
      calc_on_every_tick=false, process_orders_on_close=false,
      max_labels_count=150, max_boxes_count=50)
 
@@ -110,6 +120,8 @@ swing_tmax        = input.float(800.0, "Swing Target Maximum", minval=300.0, max
 minimum_rr        = input.float(0.6, "Minimum R:R", minval=0.5, maxval=1.0, step=0.1, group=grp_risk)
 maximum_rr        = input.float(2.5, "Maximum R:R", minval=1.0, maxval=5.0, step=0.5, group=grp_risk)
 snr_frontrun      = input.float(10.0, "TP / SL Before S&R", minval=5.0, maxval=100.0, step=5.0, group=grp_risk)
+max_dd_halt       = input.float(30.0, "Halt Trading at Drawdown %", minval=0.0, maxval=95.0, step=5.0, group=grp_risk,
+     tooltip="0 = never halt. Once equity falls this % from its peak the backtest flattens and stops entering, so one ruinous streak cannot be quoted as a strategy.")
 use_session_filter= input.bool(false, "Use Session Filter", group=grp_risk)
 trade_asia        = input.bool(true, "Trade Asia", group=grp_risk)
 trade_london      = input.bool(true, "Trade London", group=grp_risk)
@@ -139,7 +151,11 @@ barOK = barstate.isconfirmed
 // 10-point gold move into 1000 pips. Gold quotes 0.10 per point.
 sym_key  = str.upper(syminfo.tickerid + " " + syminfo.root + " " + syminfo.description)
 is_gold  = str.contains(sym_key, "XAU") or str.contains(sym_key, "GOLD")
-pip_size = is_gold ? math.max(0.10, syminfo.mintick) : math.max(syminfo.mintick, 0.0001)
+// nz(): a na syminfo.mintick would silently poison pip_size, atr_safe,
+// disp_body, brn_step and the tick-count exits with na. Default to the gold
+// floor (0.10) or the non-gold floor so a bad mintick degrades instead.
+tick_size = nz(syminfo.mintick, is_gold ? 0.10 : 0.0001)
+pip_size  = is_gold ? math.max(0.10, tick_size) : math.max(tick_size, 0.0001)
 
 f_clamp(float v, float lo, float hi) => math.max(lo, math.min(hi, v))
 
@@ -217,9 +233,9 @@ var bool  leg_up   = false
 // CHOCH is the single most common and least selective trigger, so it has to
 // prove the move was a displacement rather than a drift through the level.
 atr_val = ta.atr(atr_len)
-atr_safe     = math.max(atr_val, syminfo.mintick)
+atr_safe     = math.max(atr_val, tick_size)
 disp_range   = (high - low) / atr_safe
-disp_body    = math.abs(close - open) / math.max(high - low, syminfo.mintick)
+disp_body    = math.abs(close - open) / math.max(high - low, tick_size)
 bull_break_a = na(last_swing_h) ? na : (close - last_swing_h) / atr_safe
 bear_break_a = na(last_swing_l) ? na : (last_swing_l - close) / atr_safe
 disp_ok      = not use_disp_choch or (disp_range >= disp_min_range and disp_body >= disp_min_body and
@@ -469,7 +485,7 @@ plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(c
 // independent question about the same bar, so the count means something.
 
 // Round numbers. Gold trades 100-point steps with 50 as the micro step.
-brn_step   = is_gold ? 100.0 : math.max(close * 0.01, syminfo.mintick * 100.0)
+brn_step   = is_gold ? 100.0 : math.max(close * 0.01, tick_size * 100.0)
 f_near_brn(float px) => na(px) ? false : math.abs(px / brn_step - math.round(px / brn_step)) * brn_step <= atr_val * brn_tol
 brn_bull = use_brn and (f_near_brn(low) or f_near_brn(leg_low) or (f_near_brn(close) and close >= open))
 brn_bear = use_brn and (f_near_brn(high) or f_near_brn(leg_high) or (f_near_brn(close) and close < open))
@@ -570,6 +586,50 @@ conf_bear_n = (score_vwap<0?1:0) + (score_htf<0?1:0) + (score_smc<0?1:0) + (scor
      (leg_valid?1:0) + (brn_bear?1:0) + (regime_bear?1:0) + (pdsweep_bear?1:0) + (cluster_bear?1:0) + (disp_bear_src?1:0) + (vwap_reclaim_bear?1:0)
 conf_dir    = buy_signal ? "BUY" : (sell_signal ? "SELL" : (vwap_bull ? "BUY" : (vwap_bear ? "SELL" : "NONE")))
 conf_count  = conf_dir == "BUY" ? conf_bull_n : conf_dir == "SELL" ? conf_bear_n : math.max(conf_bull_n, conf_bear_n)
+CONF_MAX    = 15
+
+// Which of the 15 confluence sources have fired at least once since load. This
+// is the number that tunes min_conf honestly: a source stuck at 0 is dead and
+// silently caps conf_*_n, so a gate set to 7 can be unreachable. The MTF ones
+// (HTF, cluster, pdsweep) are the usual suspects when request.security cannot
+// resolve on this symbol/timeframe.
+f_src(array<int> hits, int i, bool on) =>
+    if on
+        array.set(hits, i, 1)
+
+var int[]    src_hits  = array.new_int(CONF_MAX, 0)
+var string[] src_names = array.from("vwap", "htf", "smc", "liq", "fvg", "ob", "fib", "conf", "leg", "brn", "regime", "pdsweep", "cluster", "disp", "reclaim")
+
+f_src(src_hits, 0,  score_vwap != 0)
+f_src(src_hits, 1,  score_htf != 0)
+f_src(src_hits, 2,  score_smc != 0)
+f_src(src_hits, 3,  score_liq != 0)
+f_src(src_hits, 4,  score_fvg != 0)
+f_src(src_hits, 5,  score_ob != 0)
+f_src(src_hits, 6,  score_fib != 0)
+f_src(src_hits, 7,  score_conf != 0)
+f_src(src_hits, 8,  leg_valid)
+f_src(src_hits, 9,  brn_bull or brn_bear)
+f_src(src_hits, 10, regime_bull or regime_bear)
+f_src(src_hits, 11, pdsweep_bull or pdsweep_bear)
+f_src(src_hits, 12, cluster_bull or cluster_bear)
+f_src(src_hits, 13, disp_bull_src or disp_bear_src)
+f_src(src_hits, 14, vwap_reclaim_bull or vwap_reclaim_bear)
+
+// src_names must stay aligned with the indices above and with CONF_MAX.
+f_src_alive(array<int> hits) =>
+    int n = 0
+    for i = 0 to CONF_MAX - 1
+        if array.get(hits, i) > 0
+            n += 1
+    n
+
+f_src_dead(array<int> hits) =>
+    string s = ""
+    for i = 0 to CONF_MAX - 1
+        if array.get(hits, i) == 0
+            s := s + (s == "" ? "" : " ") + array.get(src_names, i)
+    s
 
 var int last_signal_bar = 0
 is_cooldown = (bar_index - last_signal_bar) < cooldown_bars
@@ -646,6 +706,7 @@ var int    bt_seen      = 0
 var float  bt_prev_net  = 0.0
 var float  bt_peak      = na
 var float  bt_maxdd     = 0.0
+var bool   bt_halted    = false  // latch-ok: one-way drawdown halt, never resets
 var int    sc_n = 0
 var int    sc_w = 0
 var float  sc_gw = 0.0
@@ -742,22 +803,29 @@ if (buy_signal or sell_signal) and bt_flat
     // into risk, the backtest skips the trade. Counted implicitly: an entry
     // with no matching broker fill never appears in closedtrades.
     bool plan_sane = sig_buy ? (stop < px and tp_px > px) : (stop > px and tp_px < px)
-    if plan_sane
+    if plan_sane and not bt_halted
         float sgn = sig_buy ? 1.0 : -1.0
-        float tp_ticks = sgn * (tp_px - px) / syminfo.mintick
-        float sl_ticks = sgn * (px - stop) / syminfo.mintick
+        float tp_dist = sgn * (tp_px - px) / tick_size
+        float sl_dist = sgn * (px - stop) / tick_size
+        // strategy.exit's profit= and loss= are series INT tick counts; passing
+        // the float quotient (and the old `tp_ticks / 2.0`) is a type error.
+        // math.max(1, ...) stops a sub-tick plan ordering profit=0, which
+        // TradingView rejects at runtime.
+        int tp_ticks = math.max(1, int(math.round(tp_dist)))
+        int sl_ticks = math.max(1, int(math.round(sl_dist)))
+        int tp1_ticks = math.max(1, int(math.round(tp_dist / 2.0)))
         bt_last_mode := trade_mode
         bt_entries += 1
         bt_conf_sum += sig_buy ? conf_bull_n : conf_bear_n
         if sig_buy
             strategy.entry("L", strategy.long)
             if tp1_close_pct > 0
-                strategy.exit("LTP1", "L", profit=tp_ticks / 2.0, qty_percent=tp1_close_pct)
+                strategy.exit("LTP1", "L", profit=tp1_ticks, qty_percent=tp1_close_pct)
             strategy.exit("LRUN", "L", profit=tp_ticks, loss=sl_ticks)
         else
             strategy.entry("S", strategy.short)
             if tp1_close_pct > 0
-                strategy.exit("STP1", "S", profit=tp_ticks / 2.0, qty_percent=tp1_close_pct)
+                strategy.exit("STP1", "S", profit=tp1_ticks, qty_percent=tp1_close_pct)
             strategy.exit("SRUN", "S", profit=tp_ticks, loss=sl_ticks)
 
 // =========================================================================
@@ -801,13 +869,20 @@ if strategy.closedtrades > bt_seen
 eq_now = strategy.equity
 bt_peak := na(bt_peak) ? eq_now : math.max(bt_peak, eq_now)
 bt_maxdd := math.max(bt_maxdd, bt_peak - eq_now)
+// One-shot ruin guard. strategy.risk() needs a CONST value, so an input cannot
+// drive it — the halt is computed here from the input instead and evaluated a
+// bar after the peak, which is late by one bar and plenty for a drawdown stop.
+if max_dd_halt > 0 and not bt_halted and not na(bt_peak) and bt_peak > 0
+    if 100.0 * (bt_peak - eq_now) / bt_peak >= max_dd_halt
+        bt_halted := true
+        strategy.close_all("Max DD halt", comment="DD HALT")
 
-var table bt = table.new(position.bottom_right, 6, 5,
+var table bt = table.new(position.bottom_right, 6, 6,
      bgcolor=color.rgb(7, 10, 14), frame_color=color.rgb(66, 75, 86), frame_width=1,
      border_color=color.new(color.rgb(66, 75, 86), 60), border_width=1)
 
 if barstate.islast
-    table.clear(bt, 0, 0, 5, 4)
+    table.clear(bt, 0, 0, 5, 5)
     int n_all = strategy.closedtrades
     float wr_all = n_all > 0 ? 100.0 * strategy.wintrades / n_all : na
     float pf_all = strategy.grossloss < 0 ? strategy.grossprofit / -strategy.grossloss : na
@@ -854,3 +929,13 @@ if barstate.islast
     table.cell(bt, 3, 4, bt_fmt(pf_sw, "#.##"), text_color=txt, text_size=size.small, text_halign=text.align_right)
     table.cell(bt, 4, 4, bt_fmt(ex_sw, "#.##"), text_color=na(ex_sw) ? dim : (ex_sw >= 0 ? txt : color.rgb(235, 72, 96)), text_size=size.small, text_halign=text.align_right)
     table.cell(bt, 5, 4, "", text_color=txt, text_size=size.small, text_halign=text.align_right)
+    // Dead sources cap conf_*_n — this row is the honest ceiling on min_conf.
+    string bt_dead = f_src_dead(src_hits)
+    table.cell(bt, 0, 5, "SRC", text_color=dim, text_size=size.small)
+    table.cell(bt, 1, 5, str.tostring(f_src_alive(src_hits)) + "/" + str.tostring(CONF_MAX),
+         text_color=bt_dead == "" ? txt : color.rgb(245, 176, 66), text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 2, 5, bt_dead, text_color=dim, text_size=size.small, text_halign=text.align_left)
+    table.cell(bt, 3, 5, "", text_color=dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 4, 5, "", text_color=dim, text_size=size.small, text_halign=text.align_right)
+    table.cell(bt, 5, 5, bt_halted ? "HALTED" : "",
+         text_color=bt_halted ? color.rgb(235, 72, 96) : dim, text_size=size.small, text_halign=text.align_right)

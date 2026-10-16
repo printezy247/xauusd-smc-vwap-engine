@@ -149,7 +149,11 @@ barOK = barstate.isconfirmed
 // 10-point gold move into 1000 pips. Gold quotes 0.10 per point.
 sym_key  = str.upper(syminfo.tickerid + " " + syminfo.root + " " + syminfo.description)
 is_gold  = str.contains(sym_key, "XAU") or str.contains(sym_key, "GOLD")
-pip_size = is_gold ? math.max(0.10, syminfo.mintick) : math.max(syminfo.mintick, 0.0001)
+// nz(): a na syminfo.mintick would silently poison pip_size, atr_safe,
+// disp_body, brn_step and the tick-count exits with na. Default to the gold
+// floor (0.10) or the non-gold floor so a bad mintick degrades instead.
+tick_size = nz(syminfo.mintick, is_gold ? 0.10 : 0.0001)
+pip_size  = is_gold ? math.max(0.10, tick_size) : math.max(tick_size, 0.0001)
 
 // Break-even is quoted in M15 pips and square-root scaled to the chart
 // timeframe, because 25 pips means something very different on M1 and on H4.
@@ -239,9 +243,9 @@ var bool  leg_up   = false
 // CHOCH is the single most common and least selective trigger, so it has to
 // prove the move was a displacement rather than a drift through the level.
 atr_val = ta.atr(atr_len)
-atr_safe     = math.max(atr_val, syminfo.mintick)
+atr_safe     = math.max(atr_val, tick_size)
 disp_range   = (high - low) / atr_safe
-disp_body    = math.abs(close - open) / math.max(high - low, syminfo.mintick)
+disp_body    = math.abs(close - open) / math.max(high - low, tick_size)
 bull_break_a = na(last_swing_h) ? na : (close - last_swing_h) / atr_safe
 bear_break_a = na(last_swing_l) ? na : (last_swing_l - close) / atr_safe
 disp_ok      = not use_disp_choch or (disp_range >= disp_min_range and disp_body >= disp_min_body and
@@ -491,7 +495,7 @@ plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(c
 // independent question about the same bar, so the count means something.
 
 // Round numbers. Gold trades 100-point steps with 50 as the micro step.
-brn_step   = is_gold ? 100.0 : math.max(close * 0.01, syminfo.mintick * 100.0)
+brn_step   = is_gold ? 100.0 : math.max(close * 0.01, tick_size * 100.0)
 f_near_brn(float px) => na(px) ? false : math.abs(px / brn_step - math.round(px / brn_step)) * brn_step <= atr_val * brn_tol
 brn_bull = use_brn and (f_near_brn(low) or f_near_brn(leg_low) or (f_near_brn(close) and close >= open))
 brn_bear = use_brn and (f_near_brn(high) or f_near_brn(leg_high) or (f_near_brn(close) and close < open))
@@ -1056,10 +1060,14 @@ alertcondition(barOK and close < vwap_val and close[1] >= vwap_val[1], "VWAP Rec
 
 // Realtime-only lifecycle mirrors, for anyone wiring TradingView's native
 // alert dialog instead of the dynamic alert() calls below.
+// alertcondition()'s message must be a const string, so r_dir / f_signed(r_pips)
+// cannot be concatenated here — TradingView rejects a series string. The
+// direction and pips stay on the dynamic alert() calls right below; {{ticker}}
+// interpolation is handled natively by the alert dialog.
 alertcondition(live_event and barstate.isrealtime, "Trade LIVE", "LIVE trade")
-alertcondition(tp_event and barstate.isrealtime, "Take Profit", "TP {{ticker}} " + r_dir + " " + f_signed(r_pips))
-alertcondition(be_event and barstate.isrealtime, "Break-Even", "BE {{ticker}} " + r_dir + " " + f_signed(r_pips))
-alertcondition(sl_event and barstate.isrealtime, "Stop Loss", "SL {{ticker}} " + r_dir + " " + f_signed(r_pips))
+alertcondition(tp_event and barstate.isrealtime, "Take Profit", "Take Profit on {{ticker}}")
+alertcondition(be_event and barstate.isrealtime, "Break-Even", "Break-Even on {{ticker}}")
+alertcondition(sl_event and barstate.isrealtime, "Stop Loss", "Stop Loss on {{ticker}}")
 
 // -- dynamic alerts -------------------------------------------------------
 const int MAX_MARKERS = 33

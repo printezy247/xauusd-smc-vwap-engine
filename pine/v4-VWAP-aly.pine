@@ -163,7 +163,11 @@ barOK = barstate.isconfirmed
 // 10-point gold move into 1000 pips. Gold quotes 0.10 per point.
 sym_key  = str.upper(syminfo.tickerid + " " + syminfo.root + " " + syminfo.description)
 is_gold  = str.contains(sym_key, "XAU") or str.contains(sym_key, "GOLD")
-pip_size = is_gold ? math.max(0.10, syminfo.mintick) : math.max(syminfo.mintick, 0.0001)
+// nz(): a na syminfo.mintick would silently poison pip_size, atr_safe,
+// disp_body, brn_step and the tick-count exits with na. Default to the gold
+// floor (0.10) or the non-gold floor so a bad mintick degrades instead.
+tick_size = nz(syminfo.mintick, is_gold ? 0.10 : 0.0001)
+pip_size  = is_gold ? math.max(0.10, tick_size) : math.max(tick_size, 0.0001)
 
 // Break-even is quoted in M15 pips and square-root scaled to the chart
 // timeframe, because 25 pips means something very different on M1 and on H4.
@@ -259,9 +263,9 @@ atr_val = ta.atr(atr_len)
 // P1: displacement quality. BOS is continuation and needs none of this, but a
 // CHOCH is the single most common and least selective trigger, so it has to
 // prove the move was a displacement rather than a drift through the level.
-atr_safe     = math.max(atr_val, syminfo.mintick)
+atr_safe     = math.max(atr_val, tick_size)
 disp_range   = (high - low) / atr_safe
-disp_body    = math.abs(close - open) / math.max(high - low, syminfo.mintick)
+disp_body    = math.abs(close - open) / math.max(high - low, tick_size)
 bull_break_a = na(last_swing_h) ? na : (close - last_swing_h) / atr_safe
 bear_break_a = na(last_swing_l) ? na : (last_swing_l - close) / atr_safe
 disp_ok      = not use_disp_choch or (disp_range >= disp_min_range and disp_body >= disp_min_body and
@@ -489,7 +493,7 @@ plot(show_fib_levels and leg_valid ? fib_618 : na, "Fib 61.8", color=color.new(c
 // independent question about the same bar, so the count means something.
 
 // Round numbers. Gold trades 100-point steps with 50 as the micro step.
-brn_step   = is_gold ? 100.0 : math.max(close * 0.01, syminfo.mintick * 100.0)
+brn_step   = is_gold ? 100.0 : math.max(close * 0.01, tick_size * 100.0)
 f_near_brn(float px) => na(px) ? false : math.abs(px / brn_step - math.round(px / brn_step)) * brn_step <= atr_val * brn_tol
 brn_bull = use_brn and (f_near_brn(low) or f_near_brn(leg_low) or (f_near_brn(close) and close >= open))
 brn_bear = use_brn and (f_near_brn(high) or f_near_brn(leg_high) or (f_near_brn(close) and close < open))
@@ -696,6 +700,49 @@ trade_busy = pend_entry or t_state == "ACTIVE"
 conf_dir    = t_dir != "NONE" ? t_dir : (buy_signal ? "BUY" : (sell_signal ? "SELL" : (vwap_bull ? "BUY" : (vwap_bear ? "SELL" : "NONE"))))
 conf_count  = conf_dir == "BUY" ? conf_bull_n : conf_dir == "SELL" ? conf_bear_n : math.max(conf_bull_n, conf_bear_n)
 CONF_MAX    = 15
+
+// Which of the 15 confluence sources have fired at least once since load. A
+// source stuck at 0 is dead and silently caps conf_*_n below min_conf — the
+// MTF ones (HTF, cluster, pdsweep) read na when request.security cannot
+// resolve on this symbol/timeframe. Without this readout a gate that never
+// opens just looks like "no setup today".
+f_src(array<int> hits, int i, bool on) =>
+    if on
+        array.set(hits, i, 1)
+
+var int[]    src_hits  = array.new_int(CONF_MAX, 0)
+var string[] src_names = array.from("vwap", "htf", "smc", "liq", "fvg", "ob", "fib", "conf", "leg", "brn", "regime", "pdsweep", "cluster", "disp", "reclaim")
+
+f_src(src_hits, 0,  score_vwap != 0)
+f_src(src_hits, 1,  score_htf != 0)
+f_src(src_hits, 2,  score_smc != 0)
+f_src(src_hits, 3,  score_liq != 0)
+f_src(src_hits, 4,  score_fvg != 0)
+f_src(src_hits, 5,  score_ob != 0)
+f_src(src_hits, 6,  score_fib != 0)
+f_src(src_hits, 7,  score_conf != 0)
+f_src(src_hits, 8,  leg_valid)
+f_src(src_hits, 9,  brn_bull or brn_bear)
+f_src(src_hits, 10, regime_bull or regime_bear)
+f_src(src_hits, 11, pdsweep_bull or pdsweep_bear)
+f_src(src_hits, 12, cluster_bull or cluster_bear)
+f_src(src_hits, 13, disp_bull_src or disp_bear_src)
+f_src(src_hits, 14, vwap_reclaim_bull or vwap_reclaim_bear)
+
+// src_names must stay aligned with the indices above and with CONF_MAX.
+f_src_alive(array<int> hits) =>
+    int n = 0
+    for i = 0 to CONF_MAX - 1
+        if array.get(hits, i) > 0
+            n += 1
+    n
+
+f_src_dead(array<int> hits) =>
+    string s = ""
+    for i = 0 to CONF_MAX - 1
+        if array.get(hits, i) == 0
+            s := s + (s == "" ? "" : " ") + array.get(src_names, i)
+    s
 
 // Arm on the signal bar, fill on the next one.
 if (buy_signal or sell_signal) and not trade_busy
@@ -920,11 +967,11 @@ f_row(table t, int r, string k, string v, color vc, color bg = na, color kc = na
     table.cell(t, 0, r, k, bgcolor=bg, text_color=na(kc) ? col_dim : kc, text_size=size.small)
     table.cell(t, 1, r, v, bgcolor=bg, text_color=vc, text_size=size.small, text_halign=align)
 
-var table dash = table.new(f_pos(dash_pos), 2, 4, bgcolor=col_panel, frame_color=col_frame, frame_width=1, border_color=color.new(col_frame, 60), border_width=1)
+var table dash = table.new(f_pos(dash_pos), 2, 5, bgcolor=col_panel, frame_color=col_frame, frame_width=1, border_color=color.new(col_frame, 60), border_width=1)
 var table card = table.new(f_pos(card_pos), 2, 8, bgcolor=col_panel, frame_color=col_frame, frame_width=1, border_color=color.new(col_frame, 60), border_width=1)
 
 if barstate.islast
-    table.clear(dash, 0, 0, 1, 3)
+    table.clear(dash, 0, 0, 1, 4)
     table.clear(card, 0, 0, 1, 7)
 
 if show_dash and barstate.islast
@@ -938,6 +985,11 @@ if show_dash and barstate.islast
     f_row(dash, 1, "BIAS",    bias_txt,   bias_col)
     f_row(dash, 2, "STATUS",  status_txt, status_col)
     f_row(dash, 3, "SESSION", sess_txt,   in_session ? col_text : col_dim)
+    // Warn-coloured whenever a source has never fired: it is a ceiling on the
+    // gate, not a warmup artefact, so it should not read as healthy.
+    string dead_src = f_src_dead(src_hits)
+    f_row(dash, 4, "SOURCES", str.tostring(f_src_alive(src_hits)) + "/" + str.tostring(CONF_MAX) + (dead_src == "" ? "" : " " + dead_src),
+         dead_src == "" ? col_text : col_warn)
 
 if show_card and barstate.islast
     // The card shows the live trade while there is one, and the frozen result
