@@ -1,0 +1,9 @@
+{
+  "name": "indi-bogor-tools",
+  "private": true,
+  "description": "Offline compile gate for the Pine sources. See pine_compile.mjs.",
+  "type": "module",
+  "dependencies": {
+    "pinets": "^0.11.1"
+  }
+}

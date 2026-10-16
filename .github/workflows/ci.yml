@@ -35,3 +35,36 @@ jobs:
               echo "| \`$f\` | $(wc -l < "$f") |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Independent second gate: actually transpile every source instead of only
+  # pattern-matching it. The linter is structural and cannot see type or scope
+  # errors; PineTS resolves every identifier, so an undeclared name fails the
+  # build here. Kept as a separate job because `npm ci` needs the network while
+  # the linter is pure stdlib — if npm is down, linting still runs.
+  pine-transpile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      - name: Install PineTS
+        run: npm ci --prefix tools
+
+      - name: Transpile Pine sources
+        run: node tools/pine_compile.mjs pine/*.pine
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Pine transpile (PineTS)"
+            echo
+            echo "Offline pre-check. TradingView's compiler stays authoritative —"
+            echo "PineTS accepts alertcondition string concat and \`var bool x = na\`,"
+            echo "which the linter job enforces instead."
+          } >> "$GITHUB_STEP_SUMMARY"
