@@ -17,8 +17,9 @@ alert work: `EzyMapPro_v1_8.pine` (Pine v6, local copy at
 | **P5** | Confluence scoring | **done** |
 | **P6** | Risk model + modes | **done** |
 | **P7** | v6 migration + backtest harness | **done** |
+| **P8** | Reliability pass — offline compile gate + lint rules | **done** |
 
-Build order is **P0 → P2 → P4 → P3 → P1 → P5 → P6 → P7**. Position lifecycle
+Build order is **P0 → P2 → P4 → P3 → P1 → P5 → P6 → P7 → P8**. Position lifecycle
 before the dashboard, because the card renders state that does not exist yet.
 
 ## P0 — done
@@ -62,13 +63,16 @@ before the dashboard, because the card renders state that does not exist yet.
   the P7 backtest harness exists for exactly that. The weighted
   `bull_score`/`bear_score` are still computed but only feed the trade
   card's MODE line (`n/100` display); they no longer gate entries.
-- **P7 BLIND-MIGRATION CAVEAT.** `pine/v4-VWAP-aly.pine` (`//@version=6`)
-  and `pine/strategy-backtest.pine` have never been compiled — no offline
-  Pine compiler exists, the linter is structural only. v3 stays as the
-  known-good v5 fallback. The backtest models entries + TP1 partial +
-  runner + SL only: no break-even, no trailing, zero costs, plan priced
-  off the signal close with next-open fills. Quote no number from it
-  until it compiles clean on TradingView and its fills are eyeballed
+- **P7 CAVEAT, narrowed by P8.** `pine/v4-VWAP-aly.pine` (`//@version=6`) has
+  compiled and run on TradingView, and now every push transpiles all five
+  sources offline with PineTS before CI goes green (see CI). TradingView's
+  compiler is still the only authority: PineTS accepts `alertcondition` string
+  concatenation and `var bool x = na`, which it should reject, so those two are
+  enforced by the linter instead. `pine/strategy-backtest.pine` has only ever
+  been transpiled offline — paste it before quoting any number. It models
+  entries + TP1 partial + runner + SL only: no break-even, no trailing. Costs
+  are no longer zero (slippage 2 ticks, commission 0 for a spread-only account)
+  and `max_dd_halt` stops entry after a ruinous stretch. Eyeball its fills
   against the indicator's markers.
 - ~~OB array never shrinks~~ — closed by P1 (mitigation/max-age eviction
   via `array.remove`; SL reads the nearest relevant OB).
@@ -86,10 +90,20 @@ before the dashboard, because the card renders state that does not exist yet.
 
 ## CI
 
-`tools/pine_lint.py` has no offline Pine compiler to lean on, so it targets the
-failure modes that actually bit this script:
+Two independent jobs. `pine-lint` is pure stdlib and always runs;
+`pine-transpile` needs the network for `npm ci`, so a registry outage degrades
+to "lint only" instead of failing the build on an unrelated error.
+
+### pine-lint (`tools/pine_lint.py`)
+
+Structural, no compiler behind it, so it targets the failure modes that
+actually bit this script:
 
 - `request.security` without `barmerge.lookahead_off` (repaint) — **error**
+- **undeclared identifier / forward reference** (Pine has none) — **error**
+- **`alertcondition` message that is not a const string** — **error**
+- **`strategy.exit` `profit=`/`loss=` given a float** — **error**
+- **`var bool x = na` on v6** (bool can never be na) — **error**
 - `var bool` assigned true and never reset — **warn**, this is the P0 bug class
 - Pine v6 removals (`ta.cum`, bare `iff`/`offset`/`rnd`) — **warn**
 - alert messages hardcoding a symbol — **warn**
@@ -98,9 +112,66 @@ failure modes that actually bit this script:
 - object creation inside a loop — **warn**
 - version pragma sanity, indent multiples of 4 — **error** / **warn**
 
+Two escape hatches, both deliberate: `v1`/`v2` are frozen regression baselines
+so *new* error classes are reported to them as warnings rather than failing the
+build on files we must not edit, and a `// latch-ok` marker on a `var bool`
+declaration exempts a latch that is meant to be permanent (the DD halt).
+
+### pine-transpile (`tools/pine_compile.mjs`)
+
+Runs `Indicator.prepare()` from PineTS — transpile plus scope resolution, no
+data provider, no bar simulation — over every source. This is the check the
+linter cannot make: it resolves real scopes, so an undeclared identifier fails
+the build with the identifier named. It is proven able to fail: broken copies
+produced for undeclared identifier, duplicate global and truncated source all
+exit non-zero while the real files pass.
+
+PineTS is a pre-check, not a substitute. Where the two disagree, TradingView
+wins.
+
 Run locally:
 
 ```
 python3 tools/pine_lint.py --selftest
 python3 tools/pine_lint.py pine/*.pine
+node tools/pine_compile.mjs pine/*.pine   # npm install --prefix tools first
 ```
+
+## Reference cross-check (P8)
+
+Definitions compared against `joshyattridge/smart-money-concepts` (2k+ stars,
+also the source of `smc.py`'s test fixtures). **No defects found** — every
+geometric definition matches. Four deliberate divergences, all defensible, all
+left as they are because changing any of them would retune a signal path:
+
+- **FVG** — geometry is identical: bullish gap is `high[2] < low` with
+  top = `low`, bottom = `high[2]`; bearish is the mirror. The direction filter
+  differs: ours requires the middle candle to *displace* through the prior
+  candle's extreme (`close[1] > high[2]`), the reference only requires that
+  candle be bullish. Ours is a displacement filter, not a candle-colour filter.
+- **BOS/CHOCH** — both measure the break on the close (the reference's
+  `close_break=True` default). The reference requires a full four-swing
+  pattern *including* a higher-low before calling it a BOS; ours tracks only
+  the prior swing's HH/LH direction. Ours adds a displacement gate on CHOCH,
+  which the reference does not have — deliberately stricter, not looser.
+- **OB** — both take the last opposite-colour candle before a strong move
+  (`close_index - 1` in the reference, `high[1]`/`low[1]` here), so the box
+  lands on the same candle. The trigger differs: ours fires on an ATR
+  displacement breaking the prior candle's extreme, the reference on a break
+  of the last swing. The reference also scores OB strength with volume; this
+  engine reads no volume at all.
+- **Mitigation** — ours kills a block only when price *closes* through it; the
+  reference's default (`close_mitigation=False`) is a wick. Ours survives
+  intrabar pokes, which is the stricter and more common choice.
+
+If entries ever feel too loose, the OB trigger is the one to revisit first —
+it is the only source with no structural condition behind it.
+
+### Considered and rejected
+
+- **`max_bars_back`** on `indicator()`/`strategy()`. It only guards RE10139
+  ("referencing variable has too long of a history"), which needs deep or
+  variable-indexed history references. Neither file has any: zero
+  variable-indexed refs, and the deepest literal index is 2 bars
+  (`close[1]`, `high[2]`). Docs say use it only when needed and keep the value
+  minimal, so adding it would be configuration that feeds nothing.
